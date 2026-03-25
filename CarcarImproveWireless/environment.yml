@@ -1,0 +1,9 @@
+name: carcar
+channels:
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+dependencies:
+  - conda-forge::bleak
+  - conda-forge::pyserial
+  - python=3.10
+prefix: /media/sallen/SSD-Programs/my_miniconda3_dir/envs/carcar
