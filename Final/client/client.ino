@@ -1,15 +1,28 @@
+#define CUSTOM_NAME "AlexCarCar" // Max length is 12 characters [1]
+
+long baudRates[] = {9600, 19200, 38400, 57600, 115200, 4800, 2400, 1200, 230400};
+bool moduleReady = false;
+
+
 #include <Arduino.h>
+#include <SPI.h>
+#include <MFRC522.h>
 
 // ── IR Sensor Pins ────────────────────────────────────────────────────────────
 
 #define IR1 A3
-#define IR2 A0
-#define IR3 A1   // centre
+#define IR2 A4
+#define IR3 A5   // centre
 #define IR4 A6
 #define IR5 A7
 
-String Path = "LLRRUUFF";
-const int IR_THRESHOLD[5] = {};
+String Path = "";
+int IR_THRESHOLD[5] = {100,100,100,100,100};  // to be calibrated
+
+// ── RFID Pins ─────────────────────────────────────────────────────────────────
+#define RFID_SS  2
+#define RFID_RST  3
+MFRC522 mfrc522(RFID_SS, RFID_RST);
 
 // ── TB6612 Motor Driver Pins ──────────────────────────────────────────────────
 // Left motor  (Motor A)
@@ -80,39 +93,76 @@ void readSerial3Response(unsigned long timeout_ms) {
 
 void IR_calibration(){
 
-  IR_WHITE[5] = {0};
+  int IR_WHITE[5] = {0};
+  int IR_THRESHOLD[5] = {0};
+  bool white_done = false;
+  bool black_done = false;
 
-  Serial.println("Place the car on white block and press any key to calibrate IR sensors...");
-  while (!Serial3.available()) {
+  Serial.println("Waiting for calibration commands from server...");
+  Serial3.println("Ready for calibration. Send 'CALIB_WHITE' or 'CALIB_BLACK'");
+  
+  while (!white_done || !black_done) {
+    if (Serial3.available()) {
+      String cmd = Serial3.readStringUntil('\n');
+      cmd.trim();
+      Serial.println("Received: " + cmd);
+      
+      if (cmd == "CALIB_WHITE" && !white_done) {
+        Serial.println("Starting WHITE calibration...");
+        Serial3.println("Place car on WHITE block. Calibrating in 3 seconds...");
+        delay(3000);
+        
+        for (int i = 0; i < 5; i++) {
+          Serial.print("Calibrating WHITE sensor ");
+          Serial.print(i + 1);
+          Serial.print("... ");
+          delay(500);
+          IR_WHITE[i] = analogRead(IR1 + i);
+          Serial.print("Value: ");
+          Serial.println(IR_WHITE[i]);
+          Serial3.print("WHITE_");
+          Serial3.print(i + 1);
+          Serial3.print(":");
+          Serial3.println(IR_WHITE[i]);
+        }
+        Serial.println("✓ WHITE calibration complete!");
+        Serial3.println("✓ WHITE calibration complete!");
+        white_done = true;
+        delay(1000);
+      }
+      
+      else if (cmd == "CALIB_BLACK" && !black_done) {
+        Serial.println("Starting BLACK calibration...");
+        Serial3.println("Place car on BLACK block. Calibrating in 3 seconds...");
+        delay(3000);
+        
+        for (int i = 0; i < 5; i++) {
+          Serial.print("Calibrating BLACK sensor ");
+          Serial.print(i + 1);
+          Serial.print("... ");
+          delay(500);
+          int black_val = analogRead(IR1 + i);
+          IR_THRESHOLD[i] = (black_val + IR_WHITE[i]) / 2;
+          Serial.print("Black value: ");
+          Serial.print(black_val);
+          Serial.print(", Threshold: ");
+          Serial.println(IR_THRESHOLD[i]);
+          Serial3.print("BLACK_");
+          Serial3.print(i + 1);
+          Serial3.print(":");
+          Serial3.println(IR_THRESHOLD[i]);
+        }
+        Serial.println("✓ BLACK calibration complete!");
+        Serial3.println("✓ BLACK calibration complete!");
+        black_done = true;
+        delay(1000);
+      }
+    }
     delay(100);
   }
-  Serial3.read();  // clear the input buffer
-
-  for (int i = 0; i < 5; i++) {
-    Serial.print("Calibrating IR sensor ");
-    Serial.print(i + 1);
-    Serial.print("... ");
-    delay(1000);  // wait for 1 second
-    IR_WHITE[i] = analogRead(IR1 + i);
-    Serial.print("Value: ");
-    Serial.println(IR_WHITE[i]);
-  }
-
-  Serial.println("Place the car on black block and press any key to calibrate IR sensors...");
-  while (!Serial3.available()) {
-    delay(100);
-  }
-  Serial3.read();  // clear the input buffer
-
-  for (int i = 0; i < 5; i++) {
-    Serial.print("Calibrating IR sensor ");
-    Serial.print(i + 1);
-    Serial.print("... ");
-    delay(1000);  // wait for 1 second
-    IR_THRESHOLD[i] = (analogRead(IR1 + i) + IR_WHITE[i]) / 2;  // set threshold halfway between white and black readings
-    Serial.print("Value: ");
-    Serial.println(IR_THRESHOLD[i]);
-  }
+  
+  Serial.println("Calibration finished! Waiting for path...");
+  Serial3.println("Calibration finished! Ready to receive path.");
 }
 
 // ---------------------- Motor utility helpers -----------------------------
@@ -184,6 +234,25 @@ int readSensorsBinary(int vals[5]) {
   return active;
 }
 
+// ---------------------- RFID Scanning -----------------
+
+String scanRFID() {
+  // Check for RFID card and return UID if found, empty string otherwise
+  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+    String uid = "RFID:";
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      if (mfrc522.uid.uidByte[i] < 0x10) uid += "0";
+      uid += String(mfrc522.uid.uidByte[i], HEX);
+      if (i < mfrc522.uid.size - 1) uid += ":";
+    }
+    uid.toUpperCase();
+    mfrc522.PICC_HaltA();
+    mfrc522.PCD_StopCrypto1();
+    return uid;
+  }
+  return "";
+}
+
 int computeErrorFromSensors(int bv[5]) {
   // compute weighted average error; if no sensor sees the line return lastError*2
   int sumW = 0;
@@ -204,7 +273,7 @@ int computeErrorFromSensors(int bv[5]) {
 // ---------------------- Setup & Loop -------------------------------------
 
 void setup() {
-  Serial.begin(115200);// USB – IR debug output
+  Serial.begin(9600);// USB – IR debug output
   
   Serial.println("Initializing HM-10...");
   // IR pins are analog – no need to pinMode()
@@ -270,6 +339,10 @@ void setup() {
   digitalWrite(STBY, HIGH);
   stopMotorsPID();
 
+  // RFID (SPI)
+  SPI.begin();
+  mfrc522.PCD_Init();
+
   Serial.println("PID line follower ready");
   Serial.print("Kp="); Serial.print(Kp);
   Serial.print(" Ki="); Serial.print(Ki);
@@ -279,8 +352,59 @@ void setup() {
 }
 
 void loop() {
-  
+
   IR_calibration();
+
+  do {
+    
+    // ==================== WAIT FOR SEND_PATH SIGNAL ====================
+  Serial.println("Waiting for SEND_PATH signal from server...");
+  bool sendPathReceived = false;
+  
+  while (!sendPathReceived) {
+    if (Serial3.available()) {
+      String received_msg = Serial3.readStringUntil('\n');
+      received_msg.trim();
+      Serial.println("Received: " + received_msg);
+
+      if (received_msg == "SEND_PATH") {
+        Serial.println("SEND_PATH signal received, waiting for path data...");
+        sendPathReceived = true;
+      }
+    }
+    delay(100);
+  }
+
+  // ==================== WAIT FOR PATH ====================
+  String Path = "";
+  bool pathReceived = false;
+  
+  while (!pathReceived) {
+    if (Serial3.available()) {
+      String received_msg = Serial3.readStringUntil('\n');
+      received_msg.trim();
+      
+      // Check if it looks like a path (contains L, R, U, F)
+      if (received_msg.length() > 0 && 
+          (received_msg.indexOf('L') >= 0 || received_msg.indexOf('R') >= 0 || 
+           received_msg.indexOf('U') >= 0 || received_msg.indexOf('F') >= 0)) {
+        Path = received_msg;
+        Serial.println("Path received: " + Path);
+        pathReceived = true;
+        break;
+      }
+    }
+    delay(100);
+  }
+
+  // Confirm path reception to server
+  Serial3.println("PATH_ACK");
+  Serial.println("✓ Path ACK sent to server");
+  delay(500);
+  
+  // ==================== EXECUTE PATH ====================
+  Serial.println("Starting path execution...");
+  Serial3.println("Execute: " + Path);
 
   for(int i = 0; i < Path.length(); i++) {
     char cmd = Path.charAt(i);
@@ -297,10 +421,19 @@ void loop() {
       Serial3.println("CMD: Forward");
       goForwardThenFollowToNode();
     }
+    
+    // Check for RFID card after each movement
+    String rfidData = scanRFID();
+    if (rfidData.length() > 0) {
+      Serial.println("RFID detected: " + rfidData);
+      Serial3.println(rfidData);  // Send RFID data to server
+    }
   }
 
-  delay(10000);
+  Serial3.println("Path execution complete!");
+  }while(1);
 }
+
 
 void goForwardThenFollowToNode() {
   // drive straight for 500 ms
@@ -332,7 +465,7 @@ void goForwardThenFollowToNode() {
     Serial.println(active);
 
     // if we reached a node (3 or more sensors on the line) stop
-    if (active <= 2){
+    if (active >= 4){
       setMotors(MOTOR_SPEED, MOTOR_SPEED);
       delay(200);
       break;
@@ -363,6 +496,13 @@ void goForwardThenFollowToNode() {
 
     setMotors(leftSpeed, rightSpeed);
     lastError = error;
+    
+    // Check for RFID card while following the line
+    String rfidData = scanRFID();
+    if (rfidData.length() > 0) {
+      Serial.println("RFID detected: " + rfidData);
+      Serial3.println(rfidData);  // Send RFID data to server
+    }
   }
 
   // stop at the node
