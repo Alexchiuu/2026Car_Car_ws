@@ -20,8 +20,8 @@ String Path = "";
 int IR_THRESHOLD[5] = {100,100,100,100,100};  // to be calibrated
 
 // ── RFID Pins ─────────────────────────────────────────────────────────────────
-#define RFID_SS  2
-#define RFID_RST  3
+#define RFID_SS  53
+#define RFID_RST  49
 MFRC522 mfrc522(RFID_SS, RFID_RST);
 
 // ── TB6612 Motor Driver Pins ──────────────────────────────────────────────────
@@ -462,10 +462,9 @@ void goForwardThenFollowToNode() {
 
     int sense[5];
     int active = readSensorsBinary(sense);
-    Serial.println(active);
 
     // if we reached a node (3 or more sensors on the line) stop
-    if (active >= 4){
+    if (active <= 2){
       setMotors(MOTOR_SPEED, MOTOR_SPEED);
       delay(200);
       break;

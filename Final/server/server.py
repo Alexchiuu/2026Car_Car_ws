@@ -3,9 +3,9 @@ import time
 import sys
 import threading
 
-PORT = '/dev/tty.usbserial-10'
+PORT = '/dev/tty.usbserial-110'
 EXPECTED_NAME = 'AlexCarCar'
-PATH = "FFUFFU"  # Example path string to send to ESP32
+PATH = "FUF"  # Example path string to send to ESP32
 
 def background_listener(bridge):
     while True:
