@@ -37,7 +37,8 @@ MFRC522 mfrc522(RFID_SS, RFID_RST);
 
 #define STBY  34   // standby pin
 
-#define MOTOR_SPEED 100  // 0-255
+#define RMOTOR_SPEED 200  // 0-255
+#define LMOTOR_SPEED 200  // 0-255
 
 // ---------------------- PID controller parameters --------------------------
 float Kp = 50.0;   // proportional gain (tune this first)
@@ -473,7 +474,7 @@ void goForwardThenFollowToNode() {
       pidEnabled = false;
       nodeDetectCount++;
       if (nodeDetectCount >= NODE_DETECT_THRESHOLD) {
-        setMotors(MOTOR_SPEED, MOTOR_SPEED);
+        setMotors(LMOTOR_SPEED, RMOTOR_SPEED);
         delay(200);
         break;
       }
@@ -485,7 +486,7 @@ void goForwardThenFollowToNode() {
     
     int error = computeErrorFromSensors(sense);
     int leftSpeed, rightSpeed;
-    int base = MOTOR_SPEED;
+    int base = LMOTOR_SPEED;
 
     // Only apply PID if enabled
     if (pidEnabled) {
@@ -534,7 +535,7 @@ void goForwardThenFollowToNode() {
 void leftTurn() {
 
   // start pivot left (left reverse, right forward)
-  setMotors(0, MOTOR_SPEED);
+  setMotors(0, RMOTOR_SPEED);
   delay(900);  // wait until we leave the node (active sensors drop below 3)
 
   stopMotorsPID();
@@ -544,7 +545,7 @@ void leftTurn() {
 void rightTurn() {
 
   // start pivot right (left forward, right reverse)
-  setMotors(MOTOR_SPEED, 0);
+  setMotors(LMOTOR_SPEED, 0);
   delay(900); // Delay for 900 milliseconds
 
   stopMotorsPID();
@@ -553,7 +554,7 @@ void rightTurn() {
 // Perform a U-turn by rotating until center sensor finds the line
 void uTurn() {
 
-  setMotors(MOTOR_SPEED, -MOTOR_SPEED);
+  setMotors(LMOTOR_SPEED, -RMOTOR_SPEED);
 
   delay(950);
   
