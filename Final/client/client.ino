@@ -11,7 +11,7 @@ bool moduleReady = false;
 // ── IR Sensor Pins ────────────────────────────────────────────────────────────
 
 #define IR1 A3
-#define IR2 A4
+#define IR2 A0
 #define IR3 A5   // centre
 #define IR4 A6
 #define IR5 A7
@@ -37,8 +37,8 @@ MFRC522 mfrc522(RFID_SS, RFID_RST);
 
 #define STBY  34   // standby pin
 
-#define RMOTOR_SPEED 200  // 0-255
-#define LMOTOR_SPEED 200  // 0-255
+#define LEFT_BASE_SPEED 100  // 0-255
+#define RIGHT_BASE_SPEED 100  // 0-255
 
 // ---------------------- PID controller parameters --------------------------
 float Kp = 50.0;   // proportional gain (tune this first)
@@ -56,7 +56,7 @@ unsigned long lastTime = 0;
 const bool IR_ACTIVE_WHEN_LOW = true; // change if your sensors behave opposite
 
 // weights for sensor positions: left-most = -2 ... right-most = +2
-const int weights[5] = {2, 1, 0, -1, -2};
+const int weights[5] = {4, 1, 0, -1, -4};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -436,27 +436,26 @@ void loop() {
 }
 
 
+// ---------------------- Motor utility helpers -----------------------------
+
+
+// ── Updated Navigation Logic ────────────────────────────────────────────────
+
 void goForwardThenFollowToNode() {
-  // drive straight for 500 ms
-  setMotors(MOTOR_SPEED, MOTOR_SPEED);
+  // Use independent base speeds for the initial "straight" burst
+  setMotors(LEFT_BASE_SPEED, RIGHT_BASE_SPEED);
+  
   unsigned long start = millis();
   while (millis() - start < 500) {
-    // small delay to avoid starving background tasks
     delay(1);
   }
 
-  // reset integral term for cleaner behaviour while following
   integral = 0.0;
-
-  // use a local timing variable so we don't disturb the main loop's lastTime
   unsigned long localLastTime = millis();
-  
-  // counter to detect node (must be active <= 2 for 10 consecutive readings)
   int nodeDetectCount = 0;
   const int NODE_DETECT_THRESHOLD = 5;
-  bool pidEnabled = true;  // PID control state
+  bool pidEnabled = true;
 
-  // follow the line until a node is detected (>= 3 sensors active)
   while (true) {
     unsigned long now = millis();
     unsigned long timeChange = now - localLastTime;
@@ -469,65 +468,55 @@ void goForwardThenFollowToNode() {
     int sense[5];
     int active = readSensorsBinary(sense);
 
-    // Deactivate PID when active <= 2, reactivate when threshold not met
     if (active <= 2){
       pidEnabled = false;
       nodeDetectCount++;
       if (nodeDetectCount >= NODE_DETECT_THRESHOLD) {
-        setMotors(LMOTOR_SPEED, RMOTOR_SPEED);
+        // Move slightly past the node using calibrated speeds
+        setMotors(LEFT_BASE_SPEED, RIGHT_BASE_SPEED);
         delay(200);
         break;
       }
     } else {
-      // reset counter and reactivate PID if condition not met
       nodeDetectCount = 0;
       pidEnabled = true;
     }
     
     int error = computeErrorFromSensors(sense);
     int leftSpeed, rightSpeed;
-    int base = LMOTOR_SPEED;
 
-    // Only apply PID if enabled
     if (pidEnabled) {
-      // PID calculations (reuse globals Kp, Ki, Kd and lastError)
       float dt = (float)timeChange / 1000.0;
       integral += error * dt;
       float derivative = (error - lastError) / dt;
       float output = Kp * error + Ki * integral + Kd * derivative;
 
-      // map output to motor speeds
-      leftSpeed  = (int)constrain(base + output, -255, 255);
-      rightSpeed = (int)constrain(base - output, -255, 255);
+      // Map output to separate base speeds
+      leftSpeed  = (int)constrain(LEFT_BASE_SPEED + output, -255, 255);
+      rightSpeed = (int)constrain(RIGHT_BASE_SPEED - output, -255, 255);
 
-      // if the line is lost, pivot to last known direction (same logic as loop)
       if (active == 0) {
         if (lastError > 0) {
-          leftSpeed = base;
-          rightSpeed = -base/2;
+          leftSpeed = LEFT_BASE_SPEED;
+          rightSpeed = -RIGHT_BASE_SPEED / 2;
         } else {
-          leftSpeed = -base/2;
-          rightSpeed = base;
+          leftSpeed = -LEFT_BASE_SPEED / 2;
+          rightSpeed = RIGHT_BASE_SPEED;
         }
       }
     } else {
-      // When PID disabled, maintain straight movement
-      leftSpeed = base;
-      rightSpeed = base;
+      leftSpeed = LEFT_BASE_SPEED;
+      rightSpeed = RIGHT_BASE_SPEED;
     }
 
     setMotors(leftSpeed, rightSpeed);
     lastError = error;
     
-    // Check for RFID card while following the line
     String rfidData = scanRFID();
     if (rfidData.length() > 0) {
-      Serial.println("RFID detected: " + rfidData);
-      Serial3.println(rfidData);  // Send RFID data to server
+      Serial3.println(rfidData);
     }
   }
-
-  // stop at the node
   stopMotorsPID();
 }
 
@@ -535,8 +524,8 @@ void goForwardThenFollowToNode() {
 void leftTurn() {
 
   // start pivot left (left reverse, right forward)
-  setMotors(0, RMOTOR_SPEED);
-  delay(900);  // wait until we leave the node (active sensors drop below 3)
+  setMotors(0, RIGHT_BASE_SPEED);
+  delay(800);  // wait until we leave the node (active sensors drop below 3)
 
   stopMotorsPID();
 }
@@ -545,7 +534,7 @@ void leftTurn() {
 void rightTurn() {
 
   // start pivot right (left forward, right reverse)
-  setMotors(LMOTOR_SPEED, 0);
+  setMotors(LEFT_BASE_SPEED, 0);
   delay(900); // Delay for 900 milliseconds
 
   stopMotorsPID();
@@ -554,7 +543,7 @@ void rightTurn() {
 // Perform a U-turn by rotating until center sensor finds the line
 void uTurn() {
 
-  setMotors(LMOTOR_SPEED, -RMOTOR_SPEED);
+  setMotors(LEFT_BASE_SPEED, -RIGHT_BASE_SPEED);
 
   delay(950);
   
