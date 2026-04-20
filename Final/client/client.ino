@@ -11,8 +11,8 @@ bool moduleReady = false;
 // ── IR Sensor Pins ────────────────────────────────────────────────────────────
 
 #define IR1 A3
-#define IR2 A0
-#define IR3 A5   // centre
+#define IR2 A5
+#define IR3 A8   // centre
 #define IR4 A6
 #define IR5 A7
 
@@ -20,7 +20,7 @@ bool moduleReady = false;
 const int IR_PINS[5] = {IR1, IR2, IR3, IR4, IR5};
 
 String Path = "";
-int IR_THRESHOLD[5] = {100,100,100,100,100};  // to be calibrated
+int IR_THRESHOLD[5] = {50,50,50,50,50};  // to be calibrated
 
 // ── RFID Pins ─────────────────────────────────────────────────────────────────
 #define RFID_SS  53
@@ -44,9 +44,8 @@ MFRC522 mfrc522(RFID_SS, RFID_RST);
 #define RIGHT_BASE_SPEED 100  // 0-255
 
 // ---------------------- PID controller parameters --------------------------
-float Kp = 50.0;   // proportional gain (tune this first)
-float Ki = 0.00;   // integral gain
-float Kd = 0.0;    // derivative gain
+float Kp_val = 30.0;  
+float Kd_val = 15.0; 
 
 const unsigned long SAMPLE_TIME = 20; // ms
 
@@ -57,9 +56,6 @@ unsigned long lastTime = 0;
 
 // sensor configuration: set true if the sensor reads LOWER value on the line
 const bool IR_ACTIVE_WHEN_LOW = true; // change if your sensors behave opposite
-
-// weights for sensor positions: left-most = -2 ... right-most = +2
-const int weights[5] = {4, 1, 0, -1, -4};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -93,81 +89,8 @@ void readSerial3Response(unsigned long timeout_ms) {
   }
 }
 
-// calibration values (to be set in setup)
-
-void IR_calibration(){
-
-  int IR_WHITE[5] = {0};
-  int IR_THRESHOLD[5] = {0};
-  bool white_done = false;
-  bool black_done = false;
-
-  Serial.println("Waiting for calibration commands from server...");
-  Serial3.println("Ready for calibration. Send 'CALIB_WHITE' or 'CALIB_BLACK'");
-  
-  while (!white_done || !black_done) {
-    if (Serial3.available()) {
-      String cmd = Serial3.readStringUntil('\n');
-      cmd.trim();
-      Serial.println("Received: " + cmd);
-      
-      if (cmd == "CALIB_WHITE" && !white_done) {
-        Serial.println("Starting WHITE calibration...");
-        Serial3.println("Place car on WHITE block. Calibrating in 3 seconds...");
-        delay(3000);
-        
-        for (int i = 0; i < 5; i++) {
-          Serial.print("Calibrating WHITE sensor ");
-          Serial.print(i + 1);
-          Serial.print("... ");
-          delay(500);
-          IR_WHITE[i] = analogRead(IR1 + i);
-          Serial.print("Value: ");
-          Serial.println(IR_WHITE[i]);
-          Serial3.print("WHITE_");
-          Serial3.print(i + 1);
-          Serial3.print(":");
-          Serial3.println(IR_WHITE[i]);
-        }
-        Serial.println("✓ WHITE calibration complete!");
-        Serial3.println("✓ WHITE calibration complete!");
-        white_done = true;
-        delay(1000);
-      }
-      
-      else if (cmd == "CALIB_BLACK" && !black_done) {
-        Serial.println("Starting BLACK calibration...");
-        Serial3.println("Place car on BLACK block. Calibrating in 3 seconds...");
-        delay(3000);
-        
-        for (int i = 0; i < 5; i++) {
-          Serial.print("Calibrating BLACK sensor ");
-          Serial.print(i + 1);
-          Serial.print("... ");
-          delay(500);
-          int black_val = analogRead(IR1 + i);
-          IR_THRESHOLD[i] = (black_val + IR_WHITE[i]) / 2;
-          Serial.print("Black value: ");
-          Serial.print(black_val);
-          Serial.print(", Threshold: ");
-          Serial.println(IR_THRESHOLD[i]);
-          Serial3.print("BLACK_");
-          Serial3.print(i + 1);
-          Serial3.print(":");
-          Serial3.println(IR_THRESHOLD[i]);
-        }
-        Serial.println("✓ BLACK calibration complete!");
-        Serial3.println("✓ BLACK calibration complete!");
-        black_done = true;
-        delay(1000);
-      }
-    }
-    delay(100);
-  }
-  
-  Serial.println("Calibration finished! Waiting for path...");
-  Serial3.println("Calibration finished! Ready to receive path.");
-}
+// calibration values (stored as global variables)
+int IR_WHITE[5] = {0};
 
 // ---------------------- Motor utility helpers -----------------------------
 
@@ -356,34 +279,90 @@ void setup() {
 }
 
 void loop() {
-
-  IR_calibration();
-
-  do {
+  // Listen for commands from Bluetooth serial at any time
+  if (Serial3.available()) {
+    String command = Serial3.readStringUntil('\n');
+    command.trim();
     
-    // ==================== WAIT FOR SEND_PATH SIGNAL ====================
-  Serial.println("Waiting for SEND_PATH signal from server...");
-  bool sendPathReceived = false;
-  
-  while (!sendPathReceived) {
-    if (Serial3.available()) {
-      String received_msg = Serial3.readStringUntil('\n');
-      received_msg.trim();
-      Serial.println("Received: " + received_msg);
-
-      if (received_msg == "SEND_PATH") {
-        Serial.println("SEND_PATH signal received, waiting for path data...");
-        sendPathReceived = true;
-      }
+    Serial.println("Received command: " + command);
+    
+    // ==================== HANDLE CALIBRATION COMMANDS ====================
+    if (command == "CALIB_WHITE") {
+      handleWhiteCalibration();
     }
-    delay(100);
+    else if (command == "CALIB_BLACK") {
+      handleBlackCalibration();
+    }
+    // ==================== HANDLE PATH EXECUTION ====================
+    else if (command == "SEND_PATH") {
+      handlePathExecution();
+    }
+    // Unknown command
+    else {
+      Serial.println("Unknown command: " + command);
+      Serial3.println("ERROR: Unknown command");
+    }
   }
+  
+  delay(100);
+}
 
-  // ==================== WAIT FOR PATH ====================
+// ==================== CALIBRATION HANDLERS ====================
+
+void handleWhiteCalibration() {
+  Serial.println("Starting WHITE calibration...");
+  Serial3.println("Place car on WHITE block. Calibrating in 3 seconds...");
+  delay(3000);
+  
+  for (int i = 0; i < 5; i++) {
+    Serial.print("Calibrating WHITE sensor ");
+    Serial.print(i + 1);
+    Serial.print("... ");
+    delay(500);
+    int white_val = analogRead(IR_PINS[i]);
+    Serial.print("Value: ");
+    Serial.println(white_val);
+    Serial3.print("WHITE_");
+    Serial3.print(i + 1);
+    Serial3.print(":");
+    Serial3.println(white_val);
+  }
+  Serial.println("✓ WHITE calibration complete!");
+  Serial3.println("✓ WHITE calibration complete!");
+}
+
+void handleBlackCalibration() {
+  Serial.println("Starting BLACK calibration...");
+  Serial3.println("Place car on BLACK block. Calibrating in 3 seconds...");
+  delay(3000);
+  
+  for (int i = 0; i < 5; i++) {
+    Serial.print("Calibrating BLACK sensor ");
+    Serial.print(i + 1);
+    Serial.print("... ");
+    delay(500);
+    int black_val = analogRead(IR_PINS[i]);
+    Serial.print("Black value: ");
+    Serial.println(black_val);
+    Serial3.print("BLACK_");
+    Serial3.print(i + 1);
+    Serial3.print(":");
+    Serial3.println(black_val);
+  }
+  Serial.println("✓ BLACK calibration complete!");
+  Serial3.println("✓ BLACK calibration complete!");
+}
+
+// ==================== PATH EXECUTION HANDLER ====================
+
+void handlePathExecution() {
+  Serial.println("Waiting for path data...");
+  
   String Path = "";
   bool pathReceived = false;
+  unsigned long pathTimeout = millis() + 5000; // 5 second timeout
   
-  while (!pathReceived) {
+  while (!pathReceived && millis() < pathTimeout) {
     if (Serial3.available()) {
       String received_msg = Serial3.readStringUntil('\n');
       received_msg.trim();
@@ -399,6 +378,12 @@ void loop() {
       }
     }
     delay(100);
+  }
+
+  if (!pathReceived) {
+    Serial.println("Path reception timeout!");
+    Serial3.println("ERROR: Path reception timeout");
+    return;
   }
 
   // Confirm path reception to server
@@ -435,7 +420,6 @@ void loop() {
   }
 
   Serial3.println("Path execution complete!");
-  }while(1);
 }
 
 
@@ -445,81 +429,79 @@ void loop() {
 // ── Updated Navigation Logic ────────────────────────────────────────────────
 
 void goForwardThenFollowToNode() {
-  // Use independent base speeds for the initial "straight" burst
+  // Initial burst to move off the current node
   setMotors(LEFT_BASE_SPEED, RIGHT_BASE_SPEED);
-  
-  unsigned long start = millis();
-  while (millis() - start < 500) {
-    delay(1);
-  }
+  delay(400); 
 
-  integral = 0.0;
-  unsigned long localLastTime = millis();
+  float Kp_val = 30.0;  
+  float Kd_val = 15.0;  
+
+  lastError = 0; 
   int nodeDetectCount = 0;
   const int NODE_DETECT_THRESHOLD = 5;
-  bool pidEnabled = true;
+  
+  // Counter for serial printing
+  int loopCounter = 0;
 
   while (true) {
-    unsigned long now = millis();
-    unsigned long timeChange = now - localLastTime;
-    if (timeChange < SAMPLE_TIME) {
-      delay(1);
-      continue;
-    }
-    localLastTime = now;
-
     int sense[5];
     int active = readSensorsBinary(sense);
 
-    if (active <= 2){
-      pidEnabled = false;
-      nodeDetectCount++;
-      if (nodeDetectCount >= NODE_DETECT_THRESHOLD) {
-        // Move slightly past the node using calibrated speeds
-        setMotors(LEFT_BASE_SPEED, RIGHT_BASE_SPEED);
-        delay(200);
-        break;
-      }
-    } else {
-      nodeDetectCount = 0;
-      pidEnabled = true;
+    // --- 1. ENHANCED DIGITAL ERROR MAPPING ---
+    int error = 0;
+    if (active > 0) {
+      if (sense[0]) error = 4;
+      else if (sense[1]) error = 2;
+      else if (sense[2]) error = 0;
+      else if (sense[3]) error = -2;
+      else if (sense[4]) error = -4;
+
+      if (sense[0] && sense[1])      error = 3;
+      else if (sense[1] && sense[2]) error = 1;
+      else if (sense[2] && sense[3]) error = -1;
+      else if (sense[3] && sense[4]) error = -3;
+    } 
+    else {
+      error = (lastError > 0) ? 5 : -5;
     }
-    
-    int error = computeErrorFromSensors(sense);
-    int leftSpeed, rightSpeed;
 
-    if (pidEnabled) {
-      float dt = (float)timeChange / 1000.0;
-      integral += error * dt;
-      float derivative = (error - lastError) / dt;
-      float output = Kp * error + Ki * integral + Kd * derivative;
+    // --- 2. PD CALCULATION ---
+    float P = error * Kp_val;
+    float D = (error - lastError) * Kd_val;
+    float PD_Value = P + D;
 
-      // Map output to separate base speeds
-      leftSpeed  = (int)constrain(LEFT_BASE_SPEED + output, -255, 255);
-      rightSpeed = (int)constrain(RIGHT_BASE_SPEED - output, -255, 255);
-
-      if (active == 0) {
-        if (lastError > 0) {
-          leftSpeed = LEFT_BASE_SPEED;
-          rightSpeed = -RIGHT_BASE_SPEED / 2;
-        } else {
-          leftSpeed = -LEFT_BASE_SPEED / 2;
-          rightSpeed = RIGHT_BASE_SPEED;
-        }
-      }
-    } else {
-      leftSpeed = LEFT_BASE_SPEED;
-      rightSpeed = RIGHT_BASE_SPEED;
+    // --- PRINTING EVERY 10 LOOPS ---
+    loopCounter++;
+    if (loopCounter % 10 == 0) {
+      Serial.print("Err: "); Serial.print(error);
+      Serial.print(" | PD: "); Serial.println(PD_Value);
     }
+
+    lastError = error; 
+
+    // --- 3. APPLY TO MOTORS ---
+    int leftSpeed  = LEFT_BASE_SPEED + (int)PD_Value;
+    int rightSpeed = RIGHT_BASE_SPEED - (int)PD_Value;
 
     setMotors(leftSpeed, rightSpeed);
-    lastError = error;
+
+    // --- 4. NODE DETECTION ---
+    if (active >= 4) {
+      nodeDetectCount++;
+      if (nodeDetectCount >= NODE_DETECT_THRESHOLD) break; 
+    } else {
+      nodeDetectCount = 0;
+    }
     
+    // Check for RFID
     String rfidData = scanRFID();
     if (rfidData.length() > 0) {
       Serial3.println(rfidData);
     }
+
+    delay(10); 
   }
+
   stopMotorsPID();
 }
 
