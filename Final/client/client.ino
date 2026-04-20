@@ -40,9 +40,9 @@ MFRC522 mfrc522(RFID_SS, RFID_RST);
 #define MOTOR_SPEED 100  // 0-255
 
 // ---------------------- PID controller parameters --------------------------
-float Kp = 40.0;   // proportional gain (tune this first)
+float Kp = 50.0;   // proportional gain (tune this first)
 float Ki = 0.00;   // integral gain
-float Kd = 8.0;    // derivative gain
+float Kd = 0.0;    // derivative gain
 
 const unsigned long SAMPLE_TIME = 20; // ms
 
@@ -449,6 +449,11 @@ void goForwardThenFollowToNode() {
 
   // use a local timing variable so we don't disturb the main loop's lastTime
   unsigned long localLastTime = millis();
+  
+  // counter to detect node (must be active <= 2 for 10 consecutive readings)
+  int nodeDetectCount = 0;
+  const int NODE_DETECT_THRESHOLD = 5;
+  bool pidEnabled = true;  // PID control state
 
   // follow the line until a node is detected (>= 3 sensors active)
   while (true) {
@@ -463,34 +468,51 @@ void goForwardThenFollowToNode() {
     int sense[5];
     int active = readSensorsBinary(sense);
 
-    // if we reached a node (3 or more sensors on the line) stop
+    // Deactivate PID when active <= 2, reactivate when threshold not met
     if (active <= 2){
-      setMotors(MOTOR_SPEED, MOTOR_SPEED);
-      delay(200);
-      break;
-    }
-    int error = computeErrorFromSensors(sense);
-
-    // PID calculations (reuse globals Kp, Ki, Kd and lastError)
-    float dt = (float)timeChange / 1000.0;
-    integral += error * dt;
-    float derivative = (error - lastError) / dt;
-    float output = Kp * error + Ki * integral + Kd * derivative;
-
-    // map output to motor speeds
-    int base = MOTOR_SPEED;
-    int leftSpeed  = (int)constrain(base + output, -255, 255);
-    int rightSpeed = (int)constrain(base - output, -255, 255);
-
-    // if the line is lost, pivot to last known direction (same logic as loop)
-    if (active == 0) {
-      if (lastError > 0) {
-        leftSpeed = base;
-        rightSpeed = -base/2;
-      } else {
-        leftSpeed = -base/2;
-        rightSpeed = base;
+      pidEnabled = false;
+      nodeDetectCount++;
+      if (nodeDetectCount >= NODE_DETECT_THRESHOLD) {
+        setMotors(MOTOR_SPEED, MOTOR_SPEED);
+        delay(200);
+        break;
       }
+    } else {
+      // reset counter and reactivate PID if condition not met
+      nodeDetectCount = 0;
+      pidEnabled = true;
+    }
+    
+    int error = computeErrorFromSensors(sense);
+    int leftSpeed, rightSpeed;
+    int base = MOTOR_SPEED;
+
+    // Only apply PID if enabled
+    if (pidEnabled) {
+      // PID calculations (reuse globals Kp, Ki, Kd and lastError)
+      float dt = (float)timeChange / 1000.0;
+      integral += error * dt;
+      float derivative = (error - lastError) / dt;
+      float output = Kp * error + Ki * integral + Kd * derivative;
+
+      // map output to motor speeds
+      leftSpeed  = (int)constrain(base + output, -255, 255);
+      rightSpeed = (int)constrain(base - output, -255, 255);
+
+      // if the line is lost, pivot to last known direction (same logic as loop)
+      if (active == 0) {
+        if (lastError > 0) {
+          leftSpeed = base;
+          rightSpeed = -base/2;
+        } else {
+          leftSpeed = -base/2;
+          rightSpeed = base;
+        }
+      }
+    } else {
+      // When PID disabled, maintain straight movement
+      leftSpeed = base;
+      rightSpeed = base;
     }
 
     setMotors(leftSpeed, rightSpeed);
@@ -508,34 +530,32 @@ void goForwardThenFollowToNode() {
   stopMotorsPID();
 }
 
-// Pivot left until a new line is found (center sensor). Uses safety timeouts.
+// Pivot left until center sensor finds the line in the middle
 void leftTurn() {
+
   // start pivot left (left reverse, right forward)
   setMotors(0, MOTOR_SPEED);
-
-  // wait until we leave the node (active sensors drop below 3)
-  delay(600);
+  delay(900);  // wait until we leave the node (active sensors drop below 3)
 
   stopMotorsPID();
 }
 
-// Pivot right until a new line is found (center sensor). Uses safety timeouts.
+// Pivot right until center sensor finds the line in the middle
 void rightTurn() {
-  // start pivot left (left reverse, right forward)
-  setMotors(MOTOR_SPEED, 0);
 
-  // wait until we leave the node (active sensors drop below 3)
-  delay(600);
+  // start pivot right (left forward, right reverse)
+  setMotors(MOTOR_SPEED, 0);
+  delay(900); // Delay for 900 milliseconds
 
   stopMotorsPID();
 }
 
-// Perform a U-turn by performing two ~90deg pivots so the center sensor is found twice.
+// Perform a U-turn by rotating until center sensor finds the line
 void uTurn() {
+
   setMotors(MOTOR_SPEED, -MOTOR_SPEED);
 
-  // wait until we leave the node (active sensors drop below 3)
-  delay(750);
-
+  delay(950);
+  
   stopMotorsPID();
 }

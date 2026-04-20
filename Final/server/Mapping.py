@@ -73,6 +73,54 @@ class MapPathfinderUI:
                             queue.append(v)
                             
         return G, pos
+    
+    @staticmethod
+    def load_graph_data_static(csv_file):
+        """Static method to load the CSV, build the graph, and calculate node coordinates."""
+        df = pd.read_csv(csv_file)
+        G = nx.Graph()
+        
+        for _, row in df.iterrows():
+            idx = int(row['index'])
+            G.add_node(idx)
+
+        for _, row in df.iterrows():
+            u = int(row['index'])
+            dirs = [('North', 'ND'), ('South', 'SD'), ('West', 'WD'), ('East', 'ED')]
+            for d_name, d_dist_col in dirs:
+                v = row[d_name]
+                if pd.notna(v):
+                    v = int(v)
+                    dist = row[d_dist_col] if pd.notna(row[d_dist_col]) else 1
+                    G.add_edge(u, v, weight=dist)
+
+        # BFS to find coordinates
+        pos = {}
+        start_node = int(df['index'].iloc[0])
+        pos[start_node] = (0, 0)
+        
+        queue = [start_node]
+        visited = {start_node}
+        
+        while queue:
+            u = queue.pop(0)
+            ux, uy = pos[u]
+            row = df[df['index'] == u].iloc[0]
+            
+            dirs_coord = [('North', 0, 1, 'ND'), ('South', 0, -1, 'SD'), ('West', -1, 0, 'WD'), ('East', 1, 0, 'ED')]
+            for d_name, dx, dy, d_dist_col in dirs_coord:
+                v = row[d_name]
+                if pd.notna(v):
+                    v = int(v)
+                    dist = row[d_dist_col] if pd.notna(row[d_dist_col]) else 1
+                    vx, vy = ux + dx * dist, uy + dy * dist
+                    if v not in pos:
+                        pos[v] = (vx, vy)
+                        if v not in visited:
+                            visited.add(v)
+                            queue.append(v)
+                            
+        return G, pos
 
     def setup_ui(self):
         """Creates the controls and the canvas for the plot."""
@@ -270,6 +318,78 @@ class MapPathfinderUI:
         """Clears the path and resets the map visualization."""
         self.info_label.config(text="")
         self.draw_graph()
+
+# ==========================================
+# Helper Functions for External Use
+# ==========================================
+def get_path_and_commands(csv_path, start_node, end_node):
+    """
+    Generates the path and LRFU commands between two nodes.
+    
+    Args:
+        csv_path (str): Path to the CSV file
+        start_node (int): Starting node
+        end_node (int): Ending node
+    
+    Returns:
+        tuple: (path_list, lrfu_string)
+    """
+    try:
+        G, pos = MapPathfinderUI.load_graph_data_static(csv_path)
+        path = nx.shortest_path(G, source=start_node, target=end_node, weight='weight')
+        
+        # Create a temporary instance to use get_lrfu_sequence
+        dummy_root = tk.Tk()
+        dummy_root.withdraw()
+        app = MapPathfinderUI(dummy_root, csv_path)
+        lrfu_sequence = app.get_lrfu_sequence(path)
+        lrfu_str = ''.join(lrfu_sequence)
+        dummy_root.destroy()
+        
+        return path, lrfu_str
+    except Exception as e:
+        print(f"Error getting path: {e}")
+        return None, None
+
+def get_explore_map_commands(csv_path, start_node):
+    """
+    Generates the path and LRFU commands for full map exploration.
+    
+    Args:
+        csv_path (str): Path to the CSV file
+        start_node (int): Starting node
+    
+    Returns:
+        tuple: (path_list, lrfu_string)
+    """
+    try:
+        G, pos = MapPathfinderUI.load_graph_data_static(csv_path)
+        
+        # Use NetworkX TSP approximation
+        tsp_path = nx.approximation.traveling_salesman_problem(G, weight='weight', cycle=False)
+        
+        # Ensure we start at the requested node
+        dist_to_start = nx.shortest_path_length(G, start_node, tsp_path[0], weight='weight')
+        dist_to_end = nx.shortest_path_length(G, start_node, tsp_path[-1], weight='weight')
+        
+        if dist_to_end < dist_to_start:
+            tsp_path.reverse()
+        
+        prefix = nx.shortest_path(G, source=start_node, target=tsp_path[0], weight='weight')
+        final_path = prefix[:-1] + tsp_path
+        
+        # Create a temporary instance to use get_lrfu_sequence
+        dummy_root = tk.Tk()
+        dummy_root.withdraw()
+        app = MapPathfinderUI(dummy_root, csv_path)
+        lrfu_sequence = app.get_lrfu_sequence(final_path)
+        lrfu_str = ''.join(lrfu_sequence)
+        dummy_root.destroy()
+        
+        return final_path, lrfu_str
+    except Exception as e:
+        print(f"Error exploring map: {e}")
+        return None, None
 
 # ==========================================
 # Run the Application

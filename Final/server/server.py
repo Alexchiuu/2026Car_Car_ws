@@ -1,11 +1,14 @@
 from hm10_esp32 import HM10ESP32Bridge
+from Mapping import get_path_and_commands, get_explore_map_commands
 import time
 import sys
 import threading
+import os
 
 PORT = '/dev/tty.usbserial-110'
 EXPECTED_NAME = 'AlexCarCar'
-PATH = "FUF"  # Example path string to send to ESP32
+MAP_CSV_PATH = "../map/maze (3).csv"  # Path to the CSV file for pathfinding
+PATH = None  # Will be fetched from Mapping.py
 
 def background_listener(bridge):
     while True:
@@ -16,6 +19,8 @@ def background_listener(bridge):
         time.sleep(0.1)
 
 def main():
+    global PATH
+    
     bridge = HM10ESP32Bridge(port=PORT)
     
     # 1. Configuration Check
@@ -40,6 +45,18 @@ def main():
         sys.exit(0)
 
     print(f"✨ Ready! Connected to {EXPECTED_NAME}")
+    
+    # 3. Fetch path from Mapping.py
+    print("📍 Fetching path from map...")
+    start_node = 1  # Change these to your desired start/end nodes
+    end_node = 20   # Change these to your desired start/end nodes
+    
+    path_nodes, PATH = get_path_and_commands(MAP_CSV_PATH, start_node, end_node)
+    if PATH:
+        print(f"✅ Path fetched successfully: {PATH}")
+    else:
+        print("⚠️ Could not fetch path. Using default.")
+        PATH = "FUF"  # Fallback
     
     # Handshake: Wait for client ready signal
     print("⏳ Waiting for client to be ready...")
