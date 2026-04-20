@@ -179,24 +179,6 @@ String scanRFID() {
   }
   return "";
 }
-
-int computeErrorFromSensors(int bv[5]) {
-  // compute weighted average error; if no sensor sees the line return lastError*2
-  int sumW = 0;
-  int sumV = 0;
-  for (int i = 0; i < 5; i++) {
-    sumW += weights[i] * bv[i];
-    sumV += bv[i];
-  }
-  if (sumV == 0) {
-    // lost the line: try to use lastError to steer back
-    return (lastError >= 0) ? 3 : -3; // strong steer towards last known direction
-  }
-  // return fractional error as integer (scaled by 1)
-  float err = (float)sumW / (float)sumV;
-  return (int)round(err);
-}
-
 // ---------------------- Setup & Loop -------------------------------------
 
 void setup() {
@@ -269,11 +251,6 @@ void setup() {
   // RFID (SPI)
   SPI.begin();
   mfrc522.PCD_Init();
-
-  Serial.println("PID line follower ready");
-  Serial.print("Kp="); Serial.print(Kp);
-  Serial.print(" Ki="); Serial.print(Ki);
-  Serial.print(" Kd="); Serial.println(Kd);
 
   lastTime = millis();
 }
