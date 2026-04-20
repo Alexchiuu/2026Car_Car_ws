@@ -16,6 +16,9 @@ bool moduleReady = false;
 #define IR4 A6
 #define IR5 A7
 
+// Array for easy sensor access in loops
+const int IR_PINS[5] = {IR1, IR2, IR3, IR4, IR5};
+
 String Path = "";
 int IR_THRESHOLD[5] = {100,100,100,100,100};  // to be calibrated
 
