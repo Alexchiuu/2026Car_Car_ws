@@ -4,6 +4,7 @@ import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import traceback
 
 class MapPathfinderUI:
     def __init__(self, root, csv_path):
@@ -203,8 +204,12 @@ class MapPathfinderUI:
         self.fig.tight_layout()
         self.canvas.draw()
 
-    def get_lrfu_sequence(self, path):
-        """Converts node sequence into a Left/Right/Forward/U-turn string."""
+    def get_lrfu_sequence(self, path, explore_mode=False):
+        """Converts node sequence into a Left/Right/Forward/U-turn string.
+
+        If explore_mode is True then U-turns where the right side of the node
+        has no adjacent node in that right-direction will be encoded as 'V'.
+        """
         if not path or len(path) < 2:
             return []
 
@@ -227,18 +232,49 @@ class MapPathfinderUI:
 
         initial_dir = get_cardinal_dir(path[0], path[1])
         current_heading = initial_dir
-        
-        lrfu_sequence = ['F'] 
-        
+
+        lrfu_sequence = ['F']
+
+        # Right-direction vectors (relative to current heading)
+        right_vectors = {'N': (1, 0), 'E': (0, -1), 'S': (-1, 0), 'W': (0, 1)}
+
         for i in range(1, len(path) - 1):
             next_dir = get_cardinal_dir(path[i], path[i+1])
             move = turns[(current_heading, next_dir)]
-            lrfu_sequence.append(move)
-            # Add 'F' after L, U, or R (but not after F)
-            if move in ['L', 'U', 'R']:
+
+            move_char = move
+            # If in exploration mode and the move is a U-turn, check the right-side
+            if explore_mode and move == 'U':
+                u = path[i]
+                ux, uy = self.pos[u]
+                dx, dy = right_vectors[current_heading]
+
+                # Determine if any node exists on the right side (in that absolute direction)
+                found_on_right = False
+                tol = 1e-6
+                for v, (vx, vy) in self.pos.items():
+                    if v == u:
+                        continue
+                    # If right direction is horizontal
+                    if dx != 0:
+                        if abs(vy - uy) < tol and (vx - ux) * dx > 0:
+                            found_on_right = True
+                            break
+                    else:
+                        if abs(vx - ux) < tol and (vy - uy) * dy > 0:
+                            found_on_right = True
+                            break
+
+                if not found_on_right:
+                    # Right side outside map -> use 'V' instead of 'U'
+                    move_char = 'V'
+
+            lrfu_sequence.append(move_char)
+            # Add 'F' after L, U, R or V (but not after F)
+            if move_char in ['L', 'U', 'R', 'V']:
                 lrfu_sequence.append('F')
-            current_heading = next_dir 
-            
+            current_heading = next_dir
+
         return lrfu_sequence
 
     def calculate_path(self):
@@ -299,8 +335,8 @@ class MapPathfinderUI:
             # 3. Calculate total distance along this new route
             path_length = sum(self.G[u][v]['weight'] for u, v in zip(final_path, final_path[1:]))
             
-            # 4. Generate LRFU commands
-            lrfu_str = ' '.join(self.get_lrfu_sequence(final_path))
+            # 4. Generate LRFU commands (explore_mode=True to apply 'V' rule)
+            lrfu_str = ' '.join(self.get_lrfu_sequence(final_path, explore_mode=True))
             
             info_text = (
                 f"Mode: Full Map Exploration\n"
@@ -336,9 +372,17 @@ def get_path_and_commands(csv_path, start_node, end_node):
     """
     try:
         G, pos = MapPathfinderUI.load_graph_data_static(csv_path)
+
+        # Validate that requested nodes exist in the graph and are integers
+        if start_node not in G.nodes():
+            raise ValueError(f"Start node {start_node} is not in graph. Available nodes: {list(G.nodes())}")
+        if end_node not in G.nodes():
+            raise ValueError(f"End node {end_node} is not in graph. Available nodes: {list(G.nodes())}")
+
         path = nx.shortest_path(G, source=start_node, target=end_node, weight='weight')
         
         # Create a temporary instance to use get_lrfu_sequence
+        # Use a hidden Tk root to avoid showing the UI when called from headless scripts
         dummy_root = tk.Tk()
         dummy_root.withdraw()
         app = MapPathfinderUI(dummy_root, csv_path)
@@ -348,6 +392,8 @@ def get_path_and_commands(csv_path, start_node, end_node):
         
         return path, lrfu_str
     except Exception as e:
+        # Print full traceback to help debug issues like missing nodes or CSV parse problems
+        traceback.print_exc()
         print(f"Error getting path: {e}")
         return None, None
 
@@ -382,7 +428,7 @@ def get_explore_map_commands(csv_path, start_node):
         dummy_root = tk.Tk()
         dummy_root.withdraw()
         app = MapPathfinderUI(dummy_root, csv_path)
-        lrfu_sequence = app.get_lrfu_sequence(final_path)
+        lrfu_sequence = app.get_lrfu_sequence(final_path, explore_mode=True)
         lrfu_str = ''.join(lrfu_sequence)
         dummy_root.destroy()
         
@@ -396,8 +442,8 @@ def get_explore_map_commands(csv_path, start_node):
 # ==========================================
 if __name__ == "__main__":
     # Ensure this matches your local environment path!
-    CSV_FILENAME = '../map/maze (3).csv' 
-    
+    CSV_FILENAME = '../map/medium_maze.csv' 
+
     root = tk.Tk()
     app = MapPathfinderUI(root, CSV_FILENAME)
     root.mainloop()

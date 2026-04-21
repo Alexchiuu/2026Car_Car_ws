@@ -10,9 +10,9 @@ bool moduleReady = false;
 
 // ── IR Sensor Pins ────────────────────────────────────────────────────────────
 
-#define IR1 A3
-#define IR2 A5
-#define IR3 A8   // centre
+#define IR1 A0
+#define IR2 A10
+#define IR3 A1   // centre
 #define IR4 A6
 #define IR5 A7
 
@@ -20,7 +20,9 @@ bool moduleReady = false;
 const int IR_PINS[5] = {IR1, IR2, IR3, IR4, IR5};
 
 String Path = "";
-int IR_THRESHOLD[5] = {50,50,50,50,50};  // to be calibrated
+int IR_THRESHOLD[5] = {100,100,100,100,100};  // to be calibrated
+const int NODE_DETECT_THRESHOLD = 1;
+
 
 // ── RFID Pins ─────────────────────────────────────────────────────────────────
 #define RFID_SS  53
@@ -40,12 +42,15 @@ MFRC522 mfrc522(RFID_SS, RFID_RST);
 
 #define STBY  34   // standby pin
 
-#define LEFT_BASE_SPEED 100  // 0-255
-#define RIGHT_BASE_SPEED 100  // 0-255
+#define LEFT_BASE_SPEED 200  // 0-255
+#define RIGHT_BASE_SPEED 200  // 0-255
+#define LEFT_TURN_SPEED 90  // 0-255
+#define RIGHT_TURN_SPEED 90  // 0-255
+
 
 // ---------------------- PID controller parameters --------------------------
-float Kp_val = 30.0;  
-float Kd_val = 15.0; 
+float Kp_val = 20;  
+float Kd_val = 90; 
 
 const unsigned long SAMPLE_TIME = 20; // ms
 
@@ -55,7 +60,7 @@ int lastError = 0;
 unsigned long lastTime = 0;
 
 // sensor configuration: set true if the sensor reads LOWER value on the line
-const bool IR_ACTIVE_WHEN_LOW = true; // change if your sensors behave opposite
+const bool IR_ACTIVE_WHEN_LOW = false; // change if your sensors behave opposite
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -149,8 +154,6 @@ int readSensorsBinary(int vals[5]) {
   raw[4] = analogRead(IR5);
 
   for (int i = 0; i < 5; i++) {
-    Serial.print(raw[i]);
-    Serial.print("   ");
     bool onLine;
     if (IR_ACTIVE_WHEN_LOW) onLine = (raw[i] < IR_THRESHOLD[i]);
     else                     onLine = (raw[i] > IR_THRESHOLD[i]);
@@ -288,8 +291,6 @@ void loop() {
 
 void handleWhiteCalibration() {
   Serial.println("Starting WHITE calibration...");
-  Serial3.println("Place car on WHITE block. Calibrating in 3 seconds...");
-  delay(3000);
   
   for (int i = 0; i < 5; i++) {
     Serial.print("Calibrating WHITE sensor ");
@@ -304,14 +305,11 @@ void handleWhiteCalibration() {
     Serial3.print(":");
     Serial3.println(white_val);
   }
-  Serial.println("✓ WHITE calibration complete!");
   Serial3.println("✓ WHITE calibration complete!");
 }
 
 void handleBlackCalibration() {
   Serial.println("Starting BLACK calibration...");
-  Serial3.println("Place car on BLACK block. Calibrating in 3 seconds...");
-  delay(3000);
   
   for (int i = 0; i < 5; i++) {
     Serial.print("Calibrating BLACK sensor ");
@@ -326,7 +324,6 @@ void handleBlackCalibration() {
     Serial3.print(":");
     Serial3.println(black_val);
   }
-  Serial.println("✓ BLACK calibration complete!");
   Serial3.println("✓ BLACK calibration complete!");
 }
 
@@ -400,34 +397,35 @@ void handlePathExecution() {
 }
 
 
-// ---------------------- Motor utility helpers -----------------------------
-
+// ── Updated Navigation Logic ────────────────────────────────────────────────
 
 // ── Updated Navigation Logic ────────────────────────────────────────────────
 
 void goForwardThenFollowToNode() {
   // Initial burst to move off the current node
   setMotors(LEFT_BASE_SPEED, RIGHT_BASE_SPEED);
-  delay(400); 
-
-  float Kp_val = 30.0;  
-  float Kd_val = 15.0;  
+  delay(250); 
 
   lastError = 0; 
-  int nodeDetectCount = 0;
-  const int NODE_DETECT_THRESHOLD = 5;
-  
+  int nodeDetectCount = 0;  
   // Counter for serial printing
   int loopCounter = 0;
 
   while (true) {
+
+    //Serial3.print("hello");
     int sense[5];
     int active = readSensorsBinary(sense);
+    //Serial3.println(active);
+
 
     // --- 1. ENHANCED DIGITAL ERROR MAPPING ---
     int error = 0;
+    
     if (active > 0) {
-      if (sense[0]) error = 4;
+      if (sense[0]){
+        error = 4;
+      }
       else if (sense[1]) error = 2;
       else if (sense[2]) error = 0;
       else if (sense[3]) error = -2;
@@ -439,8 +437,10 @@ void goForwardThenFollowToNode() {
       else if (sense[3] && sense[4]) error = -3;
     } 
     else {
-      error = (lastError > 0) ? 5 : -5;
-    }
+      if(lastError == 4) error = 5;
+      else if(lastError == -4) error = -5;
+      else error = lastError;
+    }    
 
     // --- 2. PD CALCULATION ---
     float P = error * Kp_val;
@@ -448,24 +448,22 @@ void goForwardThenFollowToNode() {
     float PD_Value = P + D;
 
     // --- PRINTING EVERY 10 LOOPS ---
-    loopCounter++;
-    if (loopCounter % 10 == 0) {
-      Serial.print("Err: "); Serial.print(error);
-      Serial.print(" | PD: "); Serial.println(PD_Value);
-    }
 
     lastError = error; 
 
     // --- 3. APPLY TO MOTORS ---
-    int leftSpeed  = LEFT_BASE_SPEED + (int)PD_Value;
-    int rightSpeed = RIGHT_BASE_SPEED - (int)PD_Value;
+    int leftSpeed  = LEFT_BASE_SPEED - (int)PD_Value;
+    int rightSpeed = RIGHT_BASE_SPEED + (int)PD_Value;
 
     setMotors(leftSpeed, rightSpeed);
 
     // --- 4. NODE DETECTION ---
-    if (active >= 4) {
+    if (active >= 3) {
       nodeDetectCount++;
-      if (nodeDetectCount >= NODE_DETECT_THRESHOLD) break; 
+      if (nodeDetectCount >= NODE_DETECT_THRESHOLD){
+        setMotors(0, 0);
+        break; 
+      }
     } else {
       nodeDetectCount = 0;
     }
@@ -485,29 +483,105 @@ void goForwardThenFollowToNode() {
 // Pivot left until center sensor finds the line in the middle
 void leftTurn() {
 
-  // start pivot left (left reverse, right forward)
-  setMotors(0, RIGHT_BASE_SPEED);
-  delay(800);  // wait until we leave the node (active sensors drop below 3)
+  setMotors(0, RIGHT_BASE_SPEED * 0.5);
 
+  delay(300);
+
+  int state = 0;
+
+  int sense[5];
+  readSensorsBinary(sense);
+
+  while(!sense[2] && state == 2) { // while center sensor is not active
+    readSensorsBinary(sense);
+    if(state == 0 && sense[0]) { // left sensor detects line first
+      state = 1;
+      setMotors(0, RIGHT_BASE_SPEED * 0.3); // slow down for better accuracy
+    } else if(state == 1 && sense[1]) { // right sensor detects line first
+      state = 2;
+      setMotors(0, RIGHT_BASE_SPEED * 0.1); // slow down for better accuracy
+    }
+    delay(10); // small delay for sensor reading stability
+  }
   stopMotorsPID();
 }
 
 // Pivot right until center sensor finds the line in the middle
 void rightTurn() {
 
-  // start pivot right (left forward, right reverse)
-  setMotors(LEFT_BASE_SPEED, 0);
-  delay(900); // Delay for 900 milliseconds
+  setMotors(LEFT_BASE_SPEED * 0.5, 0);
 
+  delay(300);
+
+  int state = 0;
+
+  int sense[5];
+  readSensorsBinary(sense);
+
+  while(!sense[2] && state == 2) { // while center sensor is not active
+    readSensorsBinary(sense);
+    if(state == 0 && sense[0]) { // left sensor detects line first
+      state = 1;
+      setMotors(LEFT_BASE_SPEED * 0.3, 0); // slow down for better accuracy
+    } else if(state == 1 && sense[1]) { // right sensor detects line first
+      state = 2;
+      setMotors(LEFT_BASE_SPEED * 0.1, 0); // slow down for better accuracy
+    }
+    delay(10); // small delay for sensor reading stability
+  }
+  
   stopMotorsPID();
 }
 
 // Perform a U-turn by rotating until center sensor finds the line
 void uTurn() {
 
-  setMotors(LEFT_BASE_SPEED, -RIGHT_BASE_SPEED);
+  setMotors(LEFT_BASE_SPEED * 0.5, -RIGHT_BASE_SPEED * 0.5);
 
-  delay(950);
+  delay(300);
+
+  int state = 0;
+
+  int sense[5];
+  readSensorsBinary(sense);
+
+  while(!sense[2] && state == 2) { // while center sensor is not active
+    readSensorsBinary(sense);
+    if(state == 0 && sense[0]) { // left sensor detects line first
+      state = 1;
+      setMotors(LEFT_BASE_SPEED * 0.3, -RIGHT_BASE_SPEED * 0.3); // slow down for better accuracy
+    } else if(state == 1 && sense[1]) { // right sensor detects line first
+      state = 2;
+      setMotors(LEFT_BASE_SPEED * 0.1, -RIGHT_BASE_SPEED * 0.1); // slow down for better accuracy
+    }
+    delay(10); // small delay for sensor reading stability
+  }
+  
+  stopMotorsPID();
+}
+
+void vTurn() {
+
+  setMotors(-LEFT_BASE_SPEED * 0.5, RIGHT_BASE_SPEED * 0.5);
+
+  delay(300);
+
+  int state = 0;
+
+  int sense[5];
+  readSensorsBinary(sense);
+
+  while(!sense[2] && state == 2) { // while center sensor is not active
+    readSensorsBinary(sense);
+    if(state == 0 && sense[0]) { // left sensor detects line first
+      state = 1;
+      setMotors(-LEFT_BASE_SPEED * 0.3, RIGHT_BASE_SPEED * 0.3); // slow down for better accuracy
+    } else if(state == 1 && sense[1]) { // right sensor detects line first
+      state = 2;
+      setMotors(-LEFT_BASE_SPEED * 0.1, RIGHT_BASE_SPEED * 0.1); // slow down for better accuracy
+    }
+    delay(10); // small delay for sensor reading stability
+  }
   
   stopMotorsPID();
 }
