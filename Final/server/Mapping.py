@@ -5,6 +5,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import traceback
+import itertools
 
 class MapPathfinderUI:
     def __init__(self, root, csv_path):
@@ -17,6 +18,7 @@ class MapPathfinderUI:
             self.G, self.pos = self.load_graph_data(csv_path)
             self.nodes = list(self.G.nodes())
             self.nodes.sort()
+            self.start_node = None
         except Exception as e:
             messagebox.showerror("Error", f"Could not load CSV data:\n{e}")
             self.root.destroy()
@@ -170,25 +172,28 @@ class MapPathfinderUI:
     def get_leaf_nodes_with_scores(self):
         """
         Identifies leaf nodes (nodes with degree 1) and calculates their scores.
-        Score = (x_distance + y_distance to node 1) * 50
+        Score = (x_distance + y_distance to starting point) * 25
         
         Returns:
             dict: {node: score}
         """
         leaf_nodes = {}
         
-        # Check if node 1 exists in the graph
-        if 1 not in self.G.nodes():
+        # Use start_node if set, else default to node 1
+        reference_node = self.start_node if self.start_node is not None else 1
+        
+        # Check if reference_node exists in the graph
+        if reference_node not in self.G.nodes():
             return leaf_nodes
         
-        node1_pos = self.pos[1]
+        reference_pos = self.pos[reference_node]
         
         for node in self.G.nodes():
             # A leaf node has degree 1 (only one connection)
             if self.G.degree(node) == 1:
                 node_pos = self.pos[node]
-                x_dist = abs(node_pos[0] - node1_pos[0])
-                y_dist = abs(node_pos[1] - node1_pos[1])
+                x_dist = abs(node_pos[0] - reference_pos[0])
+                y_dist = abs(node_pos[1] - reference_pos[1])
                 score = int((x_dist + y_dist) * 25)
                 leaf_nodes[node] = score
         
@@ -316,6 +321,7 @@ class MapPathfinderUI:
         try:
             start_node = int(self.start_combo.get())
             end_node = int(self.end_combo.get())
+            self.start_node = start_node
         except ValueError:
             messagebox.showwarning("Warning", "Please select valid start and end nodes.")
             return
@@ -346,7 +352,7 @@ class MapPathfinderUI:
         Calculate the time taken for a LRFU sequence.
         F: 1 second, L/R: 1.5 seconds, U/V: 2 seconds
         """
-        time_map = {'F': 1, 'L': 1.5, 'R': 1.5, 'U': 2, 'V': 2}
+        time_map = {'F': 0.95, 'L': 1.17, 'R': 1.17, 'U': 1.24, 'V': 1.24}
         return sum(time_map.get(c, 0) for c in lrfu_sequence)
 
     def calculate_path_score(self, path):
@@ -356,84 +362,121 @@ class MapPathfinderUI:
         leaf_scores = self.get_leaf_nodes_with_scores()
         return sum(leaf_scores.get(node, 0) for node in set(path))
 
-    def find_best_path_with_time_limit(self, start_node, time_limit=70):
+    def find_best_path_with_time_limit(self, start_node, time_limit=70, beam_width=10):
         """
-        Find the path starting from start_node that maximizes leaf node scores
-        within the given time limit (in seconds).
-        Uses a Greedy Algorithm approach to prevent exponential UI freezing.
+        Finds a highly optimized path using Beam Search to maximize leaf node scores
+        within the given time limit. Prevents UI freezing while avoiding local optima.
+        
+        Args:
+            start_node (int): The starting node.
+            time_limit (int): Maximum allowed time.
+            beam_width (int): How many parallel paths to track. Higher = better path but slower.
         
         Returns:
             tuple: (best_path, best_lrfu_str, total_score, total_time)
         """
         leaf_scores = self.get_leaf_nodes_with_scores()
-        unvisited_leaves = set(leaf_scores.keys())
+        initial_unvisited = frozenset(leaf_scores.keys())
         
-        total_score = 0
-        if start_node in unvisited_leaves:
-            total_score += leaf_scores[start_node]
-            unvisited_leaves.remove(start_node)
+        initial_score = 0
+        if start_node in initial_unvisited:
+            initial_score += leaf_scores[start_node]
+            initial_unvisited -= frozenset([start_node])
             
-        current_path = [start_node]
-        current_time = 0
-        current_lrfu = []
+        # State representation: (total_score, total_time, path_list, lrfu_str, unvisited_leaves)
+        initial_state = (initial_score, 0.0, [start_node], "", initial_unvisited)
         
-        while unvisited_leaves:
-            best_next_leaf = None
-            best_metric = -1
-            best_path_extension = []
-            best_lrfu_extension = []
-            best_time_total = current_time
+        # The beam holds our current top candidate paths
+        beam = [initial_state]
+        
+        # Track the absolute best path we've seen at any point
+        best_overall_state = initial_state
+        
+        while beam:
+            next_beam = []
             
-            for leaf in unvisited_leaves:
-                try:
-                    # Find shortest path to this specific leaf node
-                    sp = nx.shortest_path(self.G, source=current_path[-1], target=leaf, weight='weight')
-                    
-                    if len(sp) > 1:
-                        test_path = current_path + sp[1:]
-                        test_lrfu = self.get_lrfu_sequence(test_path, explore_mode=True)
-                        test_time = self.calculate_lrfu_time(test_lrfu)
-                        
-                        if test_time <= time_limit:
-                            time_added = test_time - current_time
-                            if time_added <= 0: 
-                                time_added = 0.1 # Prevent division by zero
-                            
-                            # Heuristic metric: score per second spent getting there
-                            metric = leaf_scores[leaf] / time_added
-                            
-                            if metric > best_metric:
-                                best_metric = metric
-                                best_next_leaf = leaf
-                                best_path_extension = sp[1:]
-                                best_lrfu_extension = test_lrfu
-                                best_time_total = test_time
-                except nx.NetworkXNoPath:
+            for score, current_time, current_path, current_lrfu, unvisited in beam:
+                if not unvisited:
                     continue
                     
-            if best_next_leaf is None:
-                # No remaining leaves can be reached within the strict time limit
-                break
+                extended_within_limit = False
                 
-            # Commit to the best leaf calculated
-            current_path.extend(best_path_extension)
-            current_lrfu = best_lrfu_extension
-            current_time = best_time_total
-            total_score += leaf_scores[best_next_leaf]
-            unvisited_leaves.remove(best_next_leaf)
-            
-        best_lrfu_str = ''.join(current_lrfu) if current_lrfu else ""
+                for leaf in unvisited:
+                    try:
+                        # Find shortest path to this specific leaf node
+                        sp = nx.shortest_path(self.G, source=current_path[-1], target=leaf, weight='weight')
+                        
+                        if len(sp) > 1:
+                            test_path = current_path + sp[1:]
+                            test_lrfu = ''.join(self.get_lrfu_sequence(test_path, explore_mode=True))
+                            test_time = self.calculate_lrfu_time(test_lrfu)
+                            
+                            if test_time <= time_limit:
+                                extended_within_limit = True
+                                new_score = score + leaf_scores[leaf]
+                                new_unvisited = unvisited - frozenset([leaf])
+                                
+                                new_state = (new_score, test_time, test_path, test_lrfu, new_unvisited)
+                                next_beam.append(new_state)
+                                
+                                # Update global best if this is the highest score we've seen
+                                # (Tie-breaker: lower time)
+                                if (new_score > best_overall_state[0]) or \
+                                   (new_score == best_overall_state[0] and test_time < best_overall_state[1]):
+                                    best_overall_state = new_state
+                                    
+                    except nx.NetworkXNoPath:
+                        continue
+                        
+                # Over-time Fallback logic (from your original implementation)
+                # If a path can't reach any more leaves within the time limit, allow it to 
+                # make one final jump to the closest leaf, even if it goes over time.
+                if not extended_within_limit and unvisited:
+                    min_dist = float('inf')
+                    best_over_leaf = None
+                    
+                    for leaf in unvisited:
+                        try:
+                            dist = nx.shortest_path_length(self.G, source=current_path[-1], target=leaf, weight='weight')
+                            if dist < min_dist:
+                                min_dist = dist
+                                best_over_leaf = leaf
+                        except nx.NetworkXNoPath:
+                            continue
+                            
+                    if best_over_leaf is not None:
+                        sp = nx.shortest_path(self.G, source=current_path[-1], target=best_over_leaf, weight='weight')
+                        test_path = current_path + sp[1:]
+                        test_lrfu = ''.join(self.get_lrfu_sequence(test_path, explore_mode=True))
+                        test_time = self.calculate_lrfu_time(test_lrfu)
+                        
+                        new_score = score + leaf_scores[best_over_leaf]
+                        
+                        # We don't add this to next_beam because it exceeded the time limit,
+                        # but we check if it claims the throne for the global best overall.
+                        if new_score > best_overall_state[0]:
+                            best_overall_state = (new_score, test_time, test_path, test_lrfu, unvisited - frozenset([best_over_leaf]))
+
+            # Sort the generated states by a heuristic (Score per Time Spent) and prune down to the beam width.
+            # Adding a tiny constant (1e-5) prevents division by zero if time is 0.
+            if next_beam:
+                next_beam.sort(key=lambda state: state[0] / (state[1] + 1e-5), reverse=True)
+                beam = next_beam[:beam_width]
+            else:
+                beam = []
+                
+        best_score, best_time, best_path, best_lrfu, _ = best_overall_state
         
         # Fallback if the path couldn't be extended but contains multiple nodes
-        if not best_lrfu_str and len(current_path) >= 2:
-            best_lrfu_str = ''.join(self.get_lrfu_sequence(current_path, explore_mode=True))
+        if not best_lrfu and len(best_path) >= 2:
+            best_lrfu = ''.join(self.get_lrfu_sequence(best_path, explore_mode=True))
             
-        return current_path, best_lrfu_str, total_score, current_time
-
+        return best_path, best_lrfu, best_score, best_time
     def explore_map(self):
         """Finds the path with highest leaf node score within 70 second time constraint."""
         try:
             start_node = int(self.start_combo.get())
+            self.start_node = start_node
         except ValueError:
             messagebox.showwarning("Warning", "Please select a valid start node.")
             return
@@ -461,7 +504,62 @@ class MapPathfinderUI:
     def reset_map(self):
         """Clears the path and resets the map visualization."""
         self.info_label.config(text="")
+        self.start_node = None
         self.draw_graph()
+
+    def get_next_explore_commands(csv_path, current_node, remaining_time, max_commands=5, current_heading=None):
+        """
+        Generates the next path segment and LRFU commands for exploration from current_node within remaining_time,
+        adjusting for the current heading.
+        
+        Args:
+            csv_path (str): Path to the CSV file
+            current_node (int): Current node
+            remaining_time (float): Remaining time in seconds
+            max_commands (int): Maximum number of commands to return
+            current_heading (str): Current heading ('N', 'E', 'S', 'W') or None
+        
+        Returns:
+            tuple: (path_segment, commands_str, ending_heading)
+        """
+        try:
+            # Create a temporary instance
+            dummy_root = tk.Tk()
+            dummy_root.withdraw()
+            app = MapPathfinderUI(dummy_root, csv_path)
+            final_path, lrfu_str, _, _ = app.find_best_path_with_time_limit(current_node, remaining_time)
+            dummy_root.destroy()
+            
+            if not lrfu_str or len(final_path) < 2:
+                return None, None, None
+            
+            required_initial_heading = app.get_cardinal_dir(final_path[0], final_path[1])
+            
+            if current_heading and current_heading != required_initial_heading:
+                turn_cmd = app.turns[(current_heading, required_initial_heading)]
+                lrfu_str = turn_cmd + lrfu_str
+            
+            # Simulate heading to find ending_heading
+            current_h = required_initial_heading
+            for cmd in lrfu_str:
+                if cmd == 'F':
+                    pass
+                elif cmd in ['L', 'R', 'U']:
+                    for (from_h, to_h), turn in app.turns.items():
+                        if from_h == current_h and turn == cmd:
+                            current_h = to_h
+                            break
+        
+            ending_heading = current_h
+            
+            commands = lrfu_str[:max_commands]
+            num_F = commands.count('F')
+            path_segment = final_path[:num_F + 1]
+            
+            return path_segment, commands, ending_heading
+        except Exception as e:
+            print(f"Error getting next commands: {e}")
+            return None, None, None
 
 # ==========================================
 # Helper Functions for External Use
@@ -517,27 +615,11 @@ def get_explore_map_commands(csv_path, start_node):
         tuple: (path_list, lrfu_string)
     """
     try:
-        G, pos = MapPathfinderUI.load_graph_data_static(csv_path)
-        
-        # Use NetworkX TSP approximation
-        tsp_path = nx.approximation.traveling_salesman_problem(G, weight='weight', cycle=False)
-        
-        # Ensure we start at the requested node
-        dist_to_start = nx.shortest_path_length(G, start_node, tsp_path[0], weight='weight')
-        dist_to_end = nx.shortest_path_length(G, start_node, tsp_path[-1], weight='weight')
-        
-        if dist_to_end < dist_to_start:
-            tsp_path.reverse()
-        
-        prefix = nx.shortest_path(G, source=start_node, target=tsp_path[0], weight='weight')
-        final_path = prefix[:-1] + tsp_path
-        
-        # Create a temporary instance to use get_lrfu_sequence
+        # Create a temporary instance to use find_best_path_with_time_limit
         dummy_root = tk.Tk()
         dummy_root.withdraw()
         app = MapPathfinderUI(dummy_root, csv_path)
-        lrfu_sequence = app.get_lrfu_sequence(final_path, explore_mode=True)
-        lrfu_str = ''.join(lrfu_sequence)
+        final_path, lrfu_str, _, _ = app.find_best_path_with_time_limit(start_node, time_limit=70)
         dummy_root.destroy()
         
         return final_path, lrfu_str
@@ -550,7 +632,7 @@ def get_explore_map_commands(csv_path, start_node):
 # ==========================================
 if __name__ == "__main__":
     # Ensure this matches your local environment path!
-    CSV_FILENAME = '../map/big_maze_114.csv' 
+    CSV_FILENAME = '../map/medium_maze.csv' 
 
     root = tk.Tk()
     app = MapPathfinderUI(root, CSV_FILENAME)
