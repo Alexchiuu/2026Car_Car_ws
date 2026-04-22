@@ -61,8 +61,6 @@ EXPECTED_NAME = 'AlexCarCar'
 MAP_CSV_PATH = "../map/maze (3).csv"
 TEAM_NAME = "TeamName2"
 SERVER_URL = "http://140.112.175.18"
-DEFAULT_REMOTE = "http://140.112.175.18"
-DEFAULT_LOCAL = "http://localhost:5000"
 
 # Global scoreboard instance
 scoreboard = None
@@ -148,61 +146,5 @@ def main():
     except KeyboardInterrupt:
         pass
 
-def client_test(server_url: str = None, team_name: str = None):
-    """Simple test client (merged from remoteserver.py).
-    Connects to a remote scoreboard server and sends a test UID.
-    """
-    server_url = server_url or DEFAULT_REMOTE
-    team_name = team_name or "TestTeam"
-
-    print(f"Connecting to scoreboard server at {server_url} as '{team_name}'...")
-    try:
-        sb = ScoreboardServer(teamname=team_name, host=server_url, debug=False)
-        print("Connected via Socket.IO. SID:", sb.sid)
-    except Exception as e:
-        print("Failed to connect to scoreboard server:", e)
-        return
-
-    # Small pause to ensure server-side session established
-    time.sleep(0.5)
-
-    # Test add_UID
-    test_uid = "DEADBEEF"
-    print(f"Sending test UID: {test_uid}")
-    try:
-        score, time_left = sb.add_UID(test_uid)
-        print(f"Server returned -> score: {score}, time_remaining: {time_left}")
-    except Exception as e:
-        print("add_UID failed:", e)
-
-    # Test REST current score endpoint (may return None if unavailable)
-    cur = sb.get_current_score()
-    print("Current score (via REST):", cur)
-
-    print("Test completed. Disconnecting...")
-    try:
-        sb.socket.disconnect()
-    except Exception:
-        pass
-
-
 if __name__ == "__main__":
-    # Usage:
-    #  python linktoserver.py server [local_scoreboard_url]
-    #  python linktoserver.py client [remote_scoreboard_url] [team_name]
-    # Default: server mode with local scoreboard at http://localhost:5000
-    mode = sys.argv[1] if len(sys.argv) > 1 else "server"
-
-    if mode == "client":
-        server_url = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_REMOTE
-        team_name = sys.argv[3] if len(sys.argv) > 3 else "TestTeam"
-        client_test(server_url, team_name)
-    else:
-        # server mode (local). Allow overriding the scoreboard URL
-        if len(sys.argv) > 1 and sys.argv[1] != "server":
-            # if first arg is a URL directly
-            SERVER_URL = sys.argv[1]
-        else:
-            SERVER_URL = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_LOCAL
-        print(f"Running in local server mode. Using scoreboard at {SERVER_URL}")
-        main()
+    main()

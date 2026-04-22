@@ -167,6 +167,33 @@ class MapPathfinderUI:
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.root)
         self.canvas.get_tk_widget().pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
 
+    def get_leaf_nodes_with_scores(self):
+        """
+        Identifies leaf nodes (nodes with degree 1) and calculates their scores.
+        Score = (x_distance + y_distance to node 1) * 50
+        
+        Returns:
+            dict: {node: score}
+        """
+        leaf_nodes = {}
+        
+        # Check if node 1 exists in the graph
+        if 1 not in self.G.nodes():
+            return leaf_nodes
+        
+        node1_pos = self.pos[1]
+        
+        for node in self.G.nodes():
+            # A leaf node has degree 1 (only one connection)
+            if self.G.degree(node) == 1:
+                node_pos = self.pos[node]
+                x_dist = abs(node_pos[0] - node1_pos[0])
+                y_dist = abs(node_pos[1] - node1_pos[1])
+                score = int((x_dist + y_dist) * 25)
+                leaf_nodes[node] = score
+        
+        return leaf_nodes
+
     def draw_graph(self, path=None):
         """Draws the network graph on the matplotlib canvas."""
         self.ax.clear()
@@ -199,6 +226,13 @@ class MapPathfinderUI:
             self.ax.set_title(f'Path Visualization: {path[0]} → {path[-1]}', fontsize=14, pad=10)
         else:
             self.ax.set_title("Full Map Overview", fontsize=14, pad=10)
+
+        # Draw leaf node scores
+        leaf_nodes_with_scores = self.get_leaf_nodes_with_scores()
+        for node, score in leaf_nodes_with_scores.items():
+            x, y = self.pos[node]
+            self.ax.text(x, y - 0.5, f'S:{score}', fontsize=8, ha='center', 
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
 
         self.ax.axis('off')
         self.fig.tight_layout()
@@ -307,8 +341,97 @@ class MapPathfinderUI:
             self.info_label.config(text="No path found between these nodes.")
             messagebox.showinfo("No Path", f"No path exists between node {start_node} and node {end_node}.")
 
+    def calculate_lrfu_time(self, lrfu_sequence):
+        """
+        Calculate the time taken for a LRFU sequence.
+        F: 1 second, L/R: 1.5 seconds, U/V: 2 seconds
+        """
+        time_map = {'F': 1, 'L': 1.5, 'R': 1.5, 'U': 2, 'V': 2}
+        return sum(time_map.get(c, 0) for c in lrfu_sequence)
+
+    def calculate_path_score(self, path):
+        """
+        Calculate total score for a path by summing scores of all leaf nodes visited.
+        """
+        leaf_scores = self.get_leaf_nodes_with_scores()
+        return sum(leaf_scores.get(node, 0) for node in set(path))
+
+    def find_best_path_with_time_limit(self, start_node, time_limit=70):
+        """
+        Find the path starting from start_node that maximizes leaf node scores
+        within the given time limit (in seconds).
+        Uses a Greedy Algorithm approach to prevent exponential UI freezing.
+        
+        Returns:
+            tuple: (best_path, best_lrfu_str, total_score, total_time)
+        """
+        leaf_scores = self.get_leaf_nodes_with_scores()
+        unvisited_leaves = set(leaf_scores.keys())
+        
+        total_score = 0
+        if start_node in unvisited_leaves:
+            total_score += leaf_scores[start_node]
+            unvisited_leaves.remove(start_node)
+            
+        current_path = [start_node]
+        current_time = 0
+        current_lrfu = []
+        
+        while unvisited_leaves:
+            best_next_leaf = None
+            best_metric = -1
+            best_path_extension = []
+            best_lrfu_extension = []
+            best_time_total = current_time
+            
+            for leaf in unvisited_leaves:
+                try:
+                    # Find shortest path to this specific leaf node
+                    sp = nx.shortest_path(self.G, source=current_path[-1], target=leaf, weight='weight')
+                    
+                    if len(sp) > 1:
+                        test_path = current_path + sp[1:]
+                        test_lrfu = self.get_lrfu_sequence(test_path, explore_mode=True)
+                        test_time = self.calculate_lrfu_time(test_lrfu)
+                        
+                        if test_time <= time_limit:
+                            time_added = test_time - current_time
+                            if time_added <= 0: 
+                                time_added = 0.1 # Prevent division by zero
+                            
+                            # Heuristic metric: score per second spent getting there
+                            metric = leaf_scores[leaf] / time_added
+                            
+                            if metric > best_metric:
+                                best_metric = metric
+                                best_next_leaf = leaf
+                                best_path_extension = sp[1:]
+                                best_lrfu_extension = test_lrfu
+                                best_time_total = test_time
+                except nx.NetworkXNoPath:
+                    continue
+                    
+            if best_next_leaf is None:
+                # No remaining leaves can be reached within the strict time limit
+                break
+                
+            # Commit to the best leaf calculated
+            current_path.extend(best_path_extension)
+            current_lrfu = best_lrfu_extension
+            current_time = best_time_total
+            total_score += leaf_scores[best_next_leaf]
+            unvisited_leaves.remove(best_next_leaf)
+            
+        best_lrfu_str = ''.join(current_lrfu) if current_lrfu else ""
+        
+        # Fallback if the path couldn't be extended but contains multiple nodes
+        if not best_lrfu_str and len(current_path) >= 2:
+            best_lrfu_str = ''.join(self.get_lrfu_sequence(current_path, explore_mode=True))
+            
+        return current_path, best_lrfu_str, total_score, current_time
+
     def explore_map(self):
-        """Finds the shortest path that visits every single node in the map."""
+        """Finds the path with highest leaf node score within 70 second time constraint."""
         try:
             start_node = int(self.start_combo.get())
         except ValueError:
@@ -316,31 +439,16 @@ class MapPathfinderUI:
             return
 
         try:
-            # 1. Use NetworkX TSP approximation to find the optimal walk visiting all nodes
-            tsp_path = nx.approximation.traveling_salesman_problem(self.G, weight='weight', cycle=False)
+            time_limit = 70  # 20 seconds
+            final_path, lrfu_str, total_score, total_time = self.find_best_path_with_time_limit(start_node, time_limit)
             
-            # 2. To ensure we start where the user requested, connect their Start Node 
-            # to the closest end of the generated TSP path.
-            dist_to_start = nx.shortest_path_length(self.G, start_node, tsp_path[0], weight='weight')
-            dist_to_end = nx.shortest_path_length(self.G, start_node, tsp_path[-1], weight='weight')
-            
-            if dist_to_end < dist_to_start:
-                tsp_path.reverse()
-                
-            prefix = nx.shortest_path(self.G, source=start_node, target=tsp_path[0], weight='weight')
-            
-            # Combine paths (slicing [:-1] avoids duplicating the connection node)
-            final_path = prefix[:-1] + tsp_path
-            
-            # 3. Calculate total distance along this new route
+            # Calculate total distance along this route
             path_length = sum(self.G[u][v]['weight'] for u, v in zip(final_path, final_path[1:]))
             
-            # 4. Generate LRFU commands (explore_mode=True to apply 'V' rule)
-            lrfu_str = ' '.join(self.get_lrfu_sequence(final_path, explore_mode=True))
-            
             info_text = (
-                f"Mode: Full Map Exploration\n"
+                f"Mode: Time-Limited Exploration (70s limit)\n"
                 f"Total Distance: {path_length} units | Steps: {len(final_path)-1}\n"
+                f"Total Score: {total_score} points | Time Used: {total_time:.1f}s\n"
                 f"Path Nodes: {' → '.join(map(str, final_path))}\n"
                 f"LRFU Sequence:\n{lrfu_str}"
             )
@@ -442,7 +550,7 @@ def get_explore_map_commands(csv_path, start_node):
 # ==========================================
 if __name__ == "__main__":
     # Ensure this matches your local environment path!
-    CSV_FILENAME = '../map/medium_maze.csv' 
+    CSV_FILENAME = '../map/big_maze_114.csv' 
 
     root = tk.Tk()
     app = MapPathfinderUI(root, CSV_FILENAME)
