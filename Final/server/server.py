@@ -4,11 +4,19 @@ import time
 import sys
 import threading
 import os
+import re
+from linktoserver import ScoreboardServer
 
 PORT = '/dev/tty.usbserial-110'
 EXPECTED_NAME = 'AlexCarCar'
 MAP_CSV_PATH = "../map/medium_maze.csv" 
 PATH = None 
+
+# Scoreboard configuration (optional)
+TEAM_NAME = "TheBestTeam"
+SERVER_URL = "http://140.112.175.18"
+# Global scoreboard instance (may be None if connection fails)
+scoreboard = None
 
 # Lock to prevent background prints from interrupting manual input
 input_lock = threading.Lock()
@@ -20,6 +28,21 @@ def background_listener(bridge):
             # Only print if the main thread isn't busy asking for input
             with input_lock:
                 print(f"\n[ESP32]: {msg}")
+                # If message contains an RFID payload, extract and send to scoreboard
+                # Example expected format in msg: "RFID:AA:BB:CC:DD"
+                m = re.search(r"RFID:([0-9A-Fa-f:]+)", msg)
+                if m:
+                    raw_rfid = m.group(1)
+                    clean_rfid = raw_rfid.replace(":", "").upper()
+                    if scoreboard:
+                        try:
+                            score, time_left = scoreboard.add_UID(clean_rfid)
+                            current_total = scoreboard.get_current_score()
+                            print(f"[Scoreboard] Sent UID {clean_rfid} -> awarded: {score}, total: {current_total}")
+                        except Exception as e:
+                            print(f"[Scoreboard] Error sending UID {clean_rfid}: {e}")
+                    else:
+                        print(f"[Scoreboard] Detected UID {clean_rfid} but no scoreboard connected.")
                 print("> ", end="", flush=True)
         time.sleep(0.1)
 
@@ -93,6 +116,7 @@ def main():
                 bridge.send("CALIB_BLACK\n")
                 
             elif user_msg == 'c':
+                      
                 # Use the lock so the background thread doesn't print while we type
                 with input_lock:
                     try:
@@ -106,6 +130,7 @@ def main():
                         path_nodes, PATH = get_path_and_commands(MAP_CSV_PATH, start_node, end_node)
                         
                         if PATH:
+                            
                             print(f"📤 Sending path: {PATH}")
                             bridge.send("SEND_PATH\n")
                             time.sleep(1.0) # Give ESP32 time to prep
@@ -131,6 +156,22 @@ def main():
                         path_nodes, PATH = get_explore_map_commands(MAP_CSV_PATH, explore_start)
 
                         if PATH:
+                            global scoreboard
+    
+                            # Try to connect to scoreboard server (optional) with a few retries
+                            attempts = 3
+                            for attempt in range(1, attempts + 1):
+                                try:
+                                    print(f"🌐 Connecting to scoreboard server... (attempt {attempt}/{attempts})")
+                                    scoreboard = ScoreboardServer(teamname=TEAM_NAME, host=SERVER_URL, debug=False)
+                                    print(f"✅ Connected to scoreboard as {TEAM_NAME}")
+                                    break
+                                except Exception as e:
+                                    print(f"⚠️ Scoreboard connect attempt {attempt} failed: {e}")
+                                    time.sleep(1)
+                            else:
+                                print("⚠️ Could not connect to scoreboard after retries. Continuing without scoreboard.")
+                    
                             # PATH is the LRFU command string from Mapping
                             print(f"📤 Sending exploration path: {PATH}")
                             bridge.send("SEND_PATH\n")
