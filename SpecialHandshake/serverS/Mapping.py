@@ -352,7 +352,7 @@ class MapPathfinderUI:
         Calculate the time taken for a LRFU sequence.
         F: 1 second, L/R: 1.5 seconds, U/V: 2 seconds
         """
-        time_map = {'F': 1, 'L': 1.5, 'R': 1.5, 'U': 2, 'V': 2}
+        time_map = {'F': 0.95, 'L': 1.17, 'R': 1.17, 'U': 1.24, 'V': 1.24}
         return sum(time_map.get(c, 0) for c in lrfu_sequence)
 
     def calculate_path_score(self, path):
@@ -362,149 +362,116 @@ class MapPathfinderUI:
         leaf_scores = self.get_leaf_nodes_with_scores()
         return sum(leaf_scores.get(node, 0) for node in set(path))
 
-    def find_best_path_with_time_limit(self, start_node, time_limit=70):
+    def find_best_path_with_time_limit(self, start_node, time_limit=70, beam_width=10):
         """
-        Find the path starting from start_node that maximizes leaf node scores
-        within the given time limit (in seconds).
-        Uses a Greedy Algorithm approach to prevent exponential UI freezing.
+        Finds a highly optimized path using Beam Search to maximize leaf node scores
+        within the given time limit. Prevents UI freezing while avoiding local optima.
+        
+        Args:
+            start_node (int): The starting node.
+            time_limit (int): Maximum allowed time.
+            beam_width (int): How many parallel paths to track. Higher = better path but slower.
         
         Returns:
             tuple: (best_path, best_lrfu_str, total_score, total_time)
         """
         leaf_scores = self.get_leaf_nodes_with_scores()
-        unvisited_leaves = set(leaf_scores.keys())
+        initial_unvisited = frozenset(leaf_scores.keys())
         
-        total_score = 0
-        if start_node in unvisited_leaves:
-            total_score += leaf_scores[start_node]
-            unvisited_leaves.remove(start_node)
+        initial_score = 0
+        if start_node in initial_unvisited:
+            initial_score += leaf_scores[start_node]
+            initial_unvisited -= frozenset([start_node])
             
-        current_path = [start_node]
-        current_time = 0
-        current_lrfu = []
+        # State representation: (total_score, total_time, path_list, lrfu_str, unvisited_leaves)
+        initial_state = (initial_score, 0.0, [start_node], "", initial_unvisited)
         
-        while unvisited_leaves:
-            over_time = False
-            best_next_leaf = None
-            best_metric = -1
-            best_path_extension = []
-            best_lrfu_extension = []
-            best_time_total = current_time
+        # The beam holds our current top candidate paths
+        beam = [initial_state]
+        
+        # Track the absolute best path we've seen at any point
+        best_overall_state = initial_state
+        
+        while beam:
+            next_beam = []
             
-            if len(unvisited_leaves) >= 4:
-                # Consider quartets
-                best_quartet = None
-                best_quartet_score = -1
-                best_quartet_path = []
-                best_quartet_lrfu = []
-                best_quartet_time = 0
-                for quartet in itertools.combinations(unvisited_leaves, 4):
-                    for perm in itertools.permutations(quartet):
-                        try:
-                            # Compute path from current to perm[0], then to perm[1], ..., then to perm[3]
-                            sp0 = nx.shortest_path(self.G, source=current_path[-1], target=perm[0], weight='weight')
-                            sp1 = nx.shortest_path(self.G, source=perm[0], target=perm[1], weight='weight')
-                            sp2 = nx.shortest_path(self.G, source=perm[1], target=perm[2], weight='weight')
-                            sp3 = nx.shortest_path(self.G, source=perm[2], target=perm[3], weight='weight')
-                            full_path = current_path + sp0[1:] + sp1[1:] + sp2[1:] + sp3[1:]
-                            full_lrfu = self.get_lrfu_sequence(full_path, explore_mode=True)
-                            full_time = self.calculate_lrfu_time(full_lrfu)
-                            if full_time <= time_limit:
-                                quartet_score = sum(leaf_scores[leaf] for leaf in perm)
-                                if quartet_score > best_quartet_score:
-                                    best_quartet_score = quartet_score
-                                    best_quartet = perm
-                                    best_quartet_path = sp0[1:] + sp1[1:] + sp2[1:] + sp3[1:]
-                                    best_quartet_lrfu = full_lrfu
-                                    best_quartet_time = full_time
-                        except nx.NetworkXNoPath:
-                            continue
-                if best_quartet:
-                    # Add the four
-                    current_path.extend(best_quartet_path)
-                    current_lrfu = best_quartet_lrfu
-                    current_time = best_quartet_time
-                    total_score += best_quartet_score
-                    for leaf in best_quartet:
-                        unvisited_leaves.remove(leaf)
-                    continue  # Skip the single leaf logic
-            
-            # Fallback to single leaf logic
-            for leaf in unvisited_leaves:
-                try:
-                    # Find shortest path to this specific leaf node
-                    sp = nx.shortest_path(self.G, source=current_path[-1], target=leaf, weight='weight')
-                    
-                    if len(sp) > 1:
-                        test_path = current_path + sp[1:]
-                        test_lrfu = self.get_lrfu_sequence(test_path, explore_mode=True)
-                        test_time = self.calculate_lrfu_time(test_lrfu)
-                        
-                        if test_time <= time_limit:
-                            time_added = test_time - current_time
-                            if time_added <= 0: 
-                                time_added = 0.1 # Prevent division by zero
-                            
-                            # Heuristic metric: score per second spent getting there
-                            metric = leaf_scores[leaf] / time_added
-                            
-                            if metric > best_metric:
-                                best_metric = metric
-                                best_next_leaf = leaf
-                                best_path_extension = sp[1:]
-                                best_lrfu_extension = test_lrfu
-                                best_time_total = test_time
-                except nx.NetworkXNoPath:
+            for score, current_time, current_path, current_lrfu, unvisited in beam:
+                if not unvisited:
                     continue
                     
-            if best_next_leaf is None:
-                # No remaining leaves can be reached within the strict time limit
-                # But allow going over time for one more node: select the leaf with the shortest path
-                if unvisited_leaves:
+                extended_within_limit = False
+                
+                for leaf in unvisited:
+                    try:
+                        # Find shortest path to this specific leaf node
+                        sp = nx.shortest_path(self.G, source=current_path[-1], target=leaf, weight='weight')
+                        
+                        if len(sp) > 1:
+                            test_path = current_path + sp[1:]
+                            test_lrfu = ''.join(self.get_lrfu_sequence(test_path, explore_mode=True))
+                            test_time = self.calculate_lrfu_time(test_lrfu)
+                            
+                            if test_time <= time_limit:
+                                extended_within_limit = True
+                                new_score = score + leaf_scores[leaf]
+                                new_unvisited = unvisited - frozenset([leaf])
+                                
+                                new_state = (new_score, test_time, test_path, test_lrfu, new_unvisited)
+                                next_beam.append(new_state)
+                                
+                                # Update global best if this is the highest score we've seen
+                                # (Tie-breaker: lower time)
+                                if (new_score > best_overall_state[0]) or \
+                                   (new_score == best_overall_state[0] and test_time < best_overall_state[1]):
+                                    best_overall_state = new_state
+                                    
+                    except nx.NetworkXNoPath:
+                        continue
+                        
+                # Over-time Fallback logic (from your original implementation)
+                # If a path can't reach any more leaves within the time limit, allow it to 
+                # make one final jump to the closest leaf, even if it goes over time.
+                if not extended_within_limit and unvisited:
                     min_dist = float('inf')
-                    best_next_leaf = None
-                    for leaf in unvisited_leaves:
+                    best_over_leaf = None
+                    
+                    for leaf in unvisited:
                         try:
                             dist = nx.shortest_path_length(self.G, source=current_path[-1], target=leaf, weight='weight')
                             if dist < min_dist:
                                 min_dist = dist
-                                best_next_leaf = leaf
+                                best_over_leaf = leaf
                         except nx.NetworkXNoPath:
                             continue
-                    if best_next_leaf is not None:
-                        sp = nx.shortest_path(self.G, source=current_path[-1], target=best_next_leaf, weight='weight')
-                        if len(sp) > 1:
-                            best_path_extension = sp[1:]
-                            test_path = current_path + best_path_extension
-                            best_lrfu_extension = self.get_lrfu_sequence(test_path, explore_mode=True)
-                            best_time_total = self.calculate_lrfu_time(best_lrfu_extension)
-                            over_time = True  # Mark that this is over time
-                            # Proceed even if over time
-                        else:
-                            break  # Should not happen
-                    else:
-                        break  # No reachable leaves
-                else:
-                    break
+                            
+                    if best_over_leaf is not None:
+                        sp = nx.shortest_path(self.G, source=current_path[-1], target=best_over_leaf, weight='weight')
+                        test_path = current_path + sp[1:]
+                        test_lrfu = ''.join(self.get_lrfu_sequence(test_path, explore_mode=True))
+                        test_time = self.calculate_lrfu_time(test_lrfu)
+                        
+                        new_score = score + leaf_scores[best_over_leaf]
+                        
+                        # We don't add this to next_beam because it exceeded the time limit,
+                        # but we check if it claims the throne for the global best overall.
+                        if new_score > best_overall_state[0]:
+                            best_overall_state = (new_score, test_time, test_path, test_lrfu, unvisited - frozenset([best_over_leaf]))
+
+            # Sort the generated states by a heuristic (Score per Time Spent) and prune down to the beam width.
+            # Adding a tiny constant (1e-5) prevents division by zero if time is 0.
+            if next_beam:
+                next_beam.sort(key=lambda state: state[0] / (state[1] + 1e-5), reverse=True)
+                beam = next_beam[:beam_width]
+            else:
+                beam = []
                 
-            # Commit to the best leaf calculated
-            current_path.extend(best_path_extension)
-            current_lrfu = best_lrfu_extension
-            current_time = best_time_total
-            total_score += leaf_scores[best_next_leaf]
-            unvisited_leaves.remove(best_next_leaf)
-            
-            if over_time:
-                break  # Stop after adding the one over-time leaf
-            
-        best_lrfu_str = ''.join(current_lrfu) if current_lrfu else ""
+        best_score, best_time, best_path, best_lrfu, _ = best_overall_state
         
         # Fallback if the path couldn't be extended but contains multiple nodes
-        if not best_lrfu_str and len(current_path) >= 2:
-            best_lrfu_str = ''.join(self.get_lrfu_sequence(current_path, explore_mode=True))
+        if not best_lrfu and len(best_path) >= 2:
+            best_lrfu = ''.join(self.get_lrfu_sequence(best_path, explore_mode=True))
             
-        return current_path, best_lrfu_str, total_score, current_time
-
+        return best_path, best_lrfu, best_score, best_time
     def explore_map(self):
         """Finds the path with highest leaf node score within 70 second time constraint."""
         try:
@@ -648,27 +615,12 @@ def get_explore_map_commands(csv_path, start_node):
         tuple: (path_list, lrfu_string)
     """
     try:
-        G, pos = MapPathfinderUI.load_graph_data_static(csv_path)
-        
-        # Use NetworkX TSP approximation
-        tsp_path = nx.approximation.traveling_salesman_problem(G, weight='weight', cycle=False)
-        
-        # Ensure we start at the requested node
-        dist_to_start = nx.shortest_path_length(G, start_node, tsp_path[0], weight='weight')
-        dist_to_end = nx.shortest_path_length(G, start_node, tsp_path[-1], weight='weight')
-        
-        if dist_to_end < dist_to_start:
-            tsp_path.reverse()
-        
-        prefix = nx.shortest_path(G, source=start_node, target=tsp_path[0], weight='weight')
-        final_path = prefix[:-1] + tsp_path
-        
-        # Create a temporary instance to use get_lrfu_sequence
+        # Create a temporary instance to use find_best_path_with_time_limit
         dummy_root = tk.Tk()
         dummy_root.withdraw()
         app = MapPathfinderUI(dummy_root, csv_path)
-        lrfu_sequence = app.get_lrfu_sequence(final_path, explore_mode=True)
-        lrfu_str = ''.join(lrfu_sequence)
+        app.start_node = start_node  # Set the start node for scoring
+        final_path, lrfu_str, _, _ = app.find_best_path_with_time_limit(start_node, time_limit=70)
         dummy_root.destroy()
         
         return final_path, lrfu_str
