@@ -3,7 +3,6 @@ from Mapping import get_path_and_commands, get_explore_map_commands, get_next_ex
 import time
 import sys
 import threading
-import os
 import re
 from linktoserver import ScoreboardServer
 
@@ -12,87 +11,72 @@ EXPECTED_NAME = 'AlexCarCar'
 MAP_CSV_PATH = "../map/medium_maze.csv" 
 PATH = None 
 
-# Scoreboard configuration (optional)
+# Scoreboard configuration
 TEAM_NAME = "TheBestTeam"
 SERVER_URL = "http://140.112.175.18"
-# Global scoreboard instance (may be None if connection fails)
 scoreboard = None
 
-# Global remaining time
+# Global states
 remaining_time = 0
-
-# Lock to prevent background prints from interrupting manual input
 input_lock = threading.Lock()
+
+# Use an event to signal the main thread when "NEXT" is received
+next_event = threading.Event()
 
 def background_listener(bridge):
     global remaining_time
     while True:
         msg = bridge.listen()
         if msg:
-            # Only print if the main thread isn't busy asking for input
-            with input_lock:
-                print(f"\n[ESP32]: {msg}")
-                # If message contains an RFID payload, extract and send to scoreboard
-                # Example expected format in msg: "RFID:AA:BB:CC:DD"
-                m = re.search(r"RFID:([0-9A-Fa-f:]+)", msg)
-                if m:
-                    raw_rfid = m.group(1)
-                    clean_rfid = raw_rfid.replace(":", "").upper()
-                    if scoreboard:
-                        try:
-                            score, time_left = scoreboard.add_UID(clean_rfid)
-                            remaining_time = time_left
-                            current_total = scoreboard.get_current_score()
-                            print(f"[Scoreboard] Sent UID {clean_rfid} -> awarded: {score}, total: {current_total}, time left: {time_left}")
-                        except Exception as e:
-                            print(f"[Scoreboard] Error sending UID {clean_rfid}: {e}")
-                    else:
-                        print(f"[Scoreboard] Detected UID {clean_rfid} but no scoreboard connected.")
-                print("> ", end="", flush=True)
-        time.sleep(0.1)
+            # 1. Check for NEXT command to unblock the main thread
+            if "NEXT" in msg:
+                next_event.set()
+
+            # 2. Process RFID data
+            m = re.search(r"RFID:([0-9A-Fa-f:]+)", msg)
+            if m:
+                clean_rfid = m.group(1).replace(":", "").upper()
+                if scoreboard:
+                    try:
+                        score, time_left = scoreboard.add_UID(clean_rfid)
+                        remaining_time = time_left
+                        current_total = scoreboard.get_current_score()
+                        print(f"\n[Scoreboard] UID {clean_rfid} -> Score: {score} | Total: {current_total} | Time Left: {time_left}s")
+                    except Exception as e:
+                        print(f"\n[Scoreboard] Error sending UID {clean_rfid}: {e}")
+                else:
+                    print(f"\n[Scoreboard] Detected UID {clean_rfid} but no scoreboard connected.")
+
+            # Print general ESP32 messages. We don't use input_lock here 
+            # to prevent deadlocking the background thread while the car is moving.
+            print(f"\n[ESP32]: {msg.strip()}")
+            
+        time.sleep(0.05)
 
 def main():
     global PATH
+    global remaining_time 
+    global scoreboard
     
     bridge = HM10ESP32Bridge(port=PORT)
     
-    # 1. Configuration Check
     current_name = bridge.get_hm10_name()
     if current_name != EXPECTED_NAME:
         print(f"Target mismatch. Current: {current_name}, Expected: {EXPECTED_NAME}")
-        print(f"Updating target name to {EXPECTED_NAME}...")
-        
         if bridge.set_hm10_name(EXPECTED_NAME):
-            print("✅ Name updated successfully. Resetting ESP32...")
             bridge.reset()
             bridge = HM10ESP32Bridge(port=PORT)
         else:
-            print("❌ Failed to set name. Exiting.")
             sys.exit(1)
 
-    # 2. Connection Check
-    status = bridge.get_status()
-    if status != "CONNECTED":
-        print(f"⚠️ ESP32 is {status}. Please ensure HM-10 is advertising. Exiting.")
+    if bridge.get_status() != "CONNECTED":
         sys.exit(0)
 
     print(f"✨ Ready! Connected to {EXPECTED_NAME}")
     
-    # 3. Initial Path Setup
-    print("📍 Fetching initial path from map...")
-    start_node = 1  
-    end_node = 12   
-    
-    path_nodes, PATH = get_path_and_commands(MAP_CSV_PATH, start_node, end_node)
-    if PATH:
-        print(f"✅ Path fetched successfully: {PATH}")
-    else:
-        print("⚠️ Could not fetch path. Using default.")
-        PATH = "FUF"
-    
-    print("⏳ Waiting for client to be ready...")
-    time.sleep(0.5)
-    
+    # Start the background listener FIRST so it doesn't miss early messages
+    threading.Thread(target=background_listener, args=(bridge,), daemon=True).start()
+
     print("✅ Handshake complete! Ready to calibrate IR sensors.")
     print("--- Instructions ---")
     print(" 'w' : Start WHITE calibration")
@@ -101,13 +85,11 @@ def main():
     print(" 's' : Explore full map from a node")
     print(" 'exit' : Quit")
     print("--------------------")
-    
-    # Start the listener thread
-    threading.Thread(target=background_listener, args=(bridge,), daemon=True).start()
 
     try:
         while True:
-            user_msg = input("> ").strip().lower()
+            with input_lock:
+                user_msg = input("\n> ").strip().lower()
             
             if user_msg in ['exit', 'quit']: 
                 break
@@ -121,124 +103,110 @@ def main():
                 bridge.send("CALIB_BLACK\n")
                 
             elif user_msg == 'c':
-                      
-                # Use the lock so the background thread doesn't print while we type
                 with input_lock:
-                    try:
-                        print("\n--- Node Selection ---")
-                        s_input = input("Enter start node: ").strip()
-                        e_input = input("Enter end node: ").strip()
+                    print("\n--- Node Selection ---")
+                    s_input = input("Enter start node: ").strip()
+                    e_input = input("Enter end node: ").strip()
+                
+                # Out of the lock so background thread can process "NEXT" messages
+                try:
+                    start_node = int(s_input)
+                    end_node = int(e_input)
+                    path_nodes, PATH = get_path_and_commands(MAP_CSV_PATH, start_node, end_node)
+                    
+                    if PATH:
+                        print(f"📤 Sending path: {PATH}")
+                        bridge.send("SEND_PATH\n")
+                        time.sleep(1.0)
                         
-                        start_node = int(s_input)
-                        end_node = int(e_input)
-                        
-                        path_nodes, PATH = get_path_and_commands(MAP_CSV_PATH, start_node, end_node)
-                        
-                        if PATH:
+                        for i in range(0, len(PATH), 5):
+                            chunk = PATH[i:i+5]
+                            next_event.clear() # Reset the event before sending
+                            bridge.send(chunk + "\n")
                             
-                            print(f"📤 Sending path: {PATH}")
-                            bridge.send("SEND_PATH\n")
-                            time.sleep(1.0) # Give ESP32 time to prep
-                            for i in range(0, len(PATH), 5):
-                                chunk = PATH[i:i+5]
-                                bridge.send(chunk + "\n")
-                                # Wait for NEXT
-                                next_received = False
-                                timeout = time.time() + 10  # 10 second timeout
-                                while not next_received and time.time() < timeout:
-                                    msg = bridge.listen()
-                                    if msg and "NEXT" in msg:
-                                        next_received = True
-                                    time.sleep(0.1)
-                                if not next_received:
-                                    print("Timeout waiting for NEXT")
-                                    break
-                            # Send END
-                            bridge.send("END\n")
-                            print("✅ Path sent! Listening for data...")
-                        else:
-                            print("❌ Error: Pathfinding returned empty.")
-                            
-                    except ValueError:
-                        print("❌ Error: Please enter valid integer numbers for nodes.")
+                            # Wait for background thread to receive "NEXT"
+                            if not next_event.wait(timeout=10):
+                                print("⚠️ Timeout waiting for NEXT")
+                                break
+                                
+                        bridge.send("END\n")
+                        print("✅ Path sent! Listening for data...")
+                    else:
+                        print("❌ Error: Pathfinding returned empty.")
+                except ValueError:
+                    print("❌ Error: Please enter valid integer numbers.")
 
             elif user_msg == 's':
-                # Full map exploration: ask for start node then compute exploration route
                 with input_lock:
-                    try:
-                        print("\n--- Full Map Exploration ---")
-                        s_input = input("Enter start node (blank for default 1): ").strip()
-                        if s_input == "":
-                            explore_start = 1
-                        else:
-                            explore_start = int(s_input)
+                    print("\n--- Full Map Exploration ---")
+                    s_input = input("Enter start node (blank for default 1): ").strip()
+                
+                # Out of the lock so background thread can function
+                try:
+                    explore_start = 1 if s_input == "" else int(s_input)
+                    path_nodes, PATH = get_explore_map_commands(MAP_CSV_PATH, explore_start)
 
-                        path_nodes, PATH = get_explore_map_commands(MAP_CSV_PATH, explore_start)
-
-                        if PATH:
-                            global scoreboard
-    
-                            # Try to connect to scoreboard server (optional) with a few retries
-                            attempts = 3
+                    if PATH:
+                        if scoreboard is None:
+                            attempts = 10
                             for attempt in range(1, attempts + 1):
                                 try:
-                                    print(f"🌐 Connecting to scoreboard server... (attempt {attempt}/{attempts})")
+                                    print(f"🌐 Connecting to scoreboard... ({attempt}/{attempts})")
                                     scoreboard = ScoreboardServer(teamname=TEAM_NAME, host=SERVER_URL, debug=False)
-                                    print(f"✅ Connected to scoreboard as {TEAM_NAME}")
+                                    print(f"✅ Connected!")
                                     break
                                 except Exception as e:
-                                    print(f"⚠️ Scoreboard connect attempt {attempt} failed: {e}")
                                     time.sleep(1)
-                            else:
-                                print("⚠️ Could not connect to scoreboard after retries. Continuing without scoreboard.")
-                    
-                            # Dynamic exploration
-                            current_node = explore_start
-                            remaining_time = 70  # initial estimate
-                            current_heading = None  # initial, assume correct
-                            print(f"📤 Starting dynamic exploration from node {current_node} with {remaining_time}s")
-                            bridge.send("SEND_PATH\n")
-                            time.sleep(1.0)
+
+                        current_node = explore_start
+                        remaining_time = 70
+                        current_heading = None
+                        visited_nodes = set([current_node])
+                        
+                        print(f"📤 Starting dynamic exploration from node {current_node}")
+                        bridge.send("SEND_PATH\n")
+                        time.sleep(1.0)
+                        
+                        while True:
+                            path_segment, chunk, ending_heading = get_next_explore_commands(
+                                csv_path=MAP_CSV_PATH, 
+                                current_node=current_node, 
+                                remaining_time=remaining_time, 
+                                visited_nodes=visited_nodes, 
+                                max_steps=3, 
+                                current_heading=current_heading,
+                                score_reference_node=explore_start
+                            )
                             
-                            while True:
-                                path_segment, chunk, ending_heading = get_next_explore_commands(MAP_CSV_PATH, current_node, remaining_time, 5, current_heading)
-                                if not chunk:
-                                    bridge.send("END\n")
-                                    print("No more commands to send")
-                                    break
-                                
-                                print(f"📤 Sending chunk: {chunk} from node {current_node}, heading {current_heading}")
-                                bridge.send(chunk + "\n")
-                                
-                                # Wait for NEXT
-                                next_received = False
-                                timeout = time.time() + 10
-                                while not next_received and time.time() < timeout:
-                                    msg = bridge.listen()
-                                    if msg and "NEXT" in msg:
-                                        next_received = True
-                                    time.sleep(0.1)
-                                if not next_received:
-                                    print("Timeout waiting for NEXT")
-                                    break
-                                
-                                # Update current_node and current_heading
-                                current_node = path_segment[-1]
-                                current_heading = ending_heading
-                                # Update remaining_time from global
-                                remaining_time = remaining_time
-                                
-                                # Check if time is too low
-                                if remaining_time < 10:
-                                    print(f"Time running out ({remaining_time}s), stopping exploration")
-                                    bridge.send("END\n")
-                                    break
+                            if not chunk:
+                                bridge.send("END\n")
+                                print("✅ No more commands to send.")
+                                break
                             
-                            print("✅ Dynamic exploration completed!")
-                        else:
-                            print("❌ Error: Exploration start failed.")
-                    except ValueError:
-                        print("❌ Error: Please enter a valid integer for start node.")
+                            print(f"📤 Sending chunk: {chunk} (Node {current_node})")
+                            
+                            next_event.clear() # Reset event flag before sending
+                            bridge.send(chunk + "\n")
+                            
+                            # Pause execution here until background thread hears "NEXT"
+                            if not next_event.wait(timeout=10):
+                                print("⚠️ Timeout waiting for NEXT")
+                                break
+                            
+                            current_node = path_segment[-1]
+                            current_heading = ending_heading
+                            visited_nodes.update(path_segment)
+                            
+                            if remaining_time < 10:
+                                print(f"⏱️ Time running out ({remaining_time}s), stopping exploration")
+                                bridge.send("END\n")
+                                break
+                                
+                        print("✅ Dynamic exploration completed!")
+                    else:
+                        print("❌ Error: Exploration start failed.")
+                except ValueError:
+                    print("❌ Error: Please enter a valid integer.")
 
             elif user_msg: 
                 bridge.send(user_msg + "\n")

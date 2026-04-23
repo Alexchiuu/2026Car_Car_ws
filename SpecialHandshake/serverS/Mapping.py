@@ -507,60 +507,6 @@ class MapPathfinderUI:
         self.start_node = None
         self.draw_graph()
 
-    def get_next_explore_commands(csv_path, current_node, remaining_time, max_commands=5, current_heading=None):
-        """
-        Generates the next path segment and LRFU commands for exploration from current_node within remaining_time,
-        adjusting for the current heading.
-        
-        Args:
-            csv_path (str): Path to the CSV file
-            current_node (int): Current node
-            remaining_time (float): Remaining time in seconds
-            max_commands (int): Maximum number of commands to return
-            current_heading (str): Current heading ('N', 'E', 'S', 'W') or None
-        
-        Returns:
-            tuple: (path_segment, commands_str, ending_heading)
-        """
-        try:
-            # Create a temporary instance
-            dummy_root = tk.Tk()
-            dummy_root.withdraw()
-            app = MapPathfinderUI(dummy_root, csv_path)
-            final_path, lrfu_str, _, _ = app.find_best_path_with_time_limit(current_node, remaining_time)
-            dummy_root.destroy()
-            
-            if not lrfu_str or len(final_path) < 2:
-                return None, None, None
-            
-            required_initial_heading = app.get_cardinal_dir(final_path[0], final_path[1])
-            
-            if current_heading and current_heading != required_initial_heading:
-                turn_cmd = app.turns[(current_heading, required_initial_heading)]
-                lrfu_str = turn_cmd + lrfu_str
-            
-            # Simulate heading to find ending_heading
-            current_h = required_initial_heading
-            for cmd in lrfu_str:
-                if cmd == 'F':
-                    pass
-                elif cmd in ['L', 'R', 'U']:
-                    for (from_h, to_h), turn in app.turns.items():
-                        if from_h == current_h and turn == cmd:
-                            current_h = to_h
-                            break
-        
-            ending_heading = current_h
-            
-            commands = lrfu_str[:max_commands]
-            num_F = commands.count('F')
-            path_segment = final_path[:num_F + 1]
-            
-            return path_segment, commands, ending_heading
-        except Exception as e:
-            print(f"Error getting next commands: {e}")
-            return None, None, None
-
 # ==========================================
 # Helper Functions for External Use
 # ==========================================
@@ -619,7 +565,6 @@ def get_explore_map_commands(csv_path, start_node):
         dummy_root = tk.Tk()
         dummy_root.withdraw()
         app = MapPathfinderUI(dummy_root, csv_path)
-        app.start_node = start_node  # Set the start node for scoring
         final_path, lrfu_str, _, _ = app.find_best_path_with_time_limit(start_node, time_limit=70)
         dummy_root.destroy()
         
@@ -628,12 +573,129 @@ def get_explore_map_commands(csv_path, start_node):
         print(f"Error exploring map: {e}")
         return None, None
 
+def get_next_explore_commands(csv_path, current_node, remaining_time, visited_nodes=None, max_steps=3, current_heading=None, score_reference_node=None):
+    """
+    Generates the next path segment (moving up to max_steps forward) and LRFU commands 
+    for exploration from current_node within remaining_time. Adjusts for current heading,
+    handles 'V' turns, and ignores already visited nodes so it doesn't revisit score points.
+    
+    Args:
+        csv_path (str): Path to the CSV file
+        current_node (int): Current node
+        remaining_time (float): Remaining time in seconds
+        visited_nodes (set or list): Nodes that have already been visited and should not be scored again
+        max_steps (int): Number of nodes to move forward (default 3)
+        current_heading (str): Current heading ('N', 'E', 'S', 'W') or None
+        score_reference_node (int): Node to use as reference for scoring leaf nodes (default None, uses 1)
+    
+    Returns:
+        tuple: (path_segment, commands_str, ending_heading)
+    """
+    if visited_nodes is None:
+        visited_nodes = set()
+    else:
+        visited_nodes = set(visited_nodes)
+
+    try:
+        import tkinter as tk
+        dummy_root = tk.Tk()
+        dummy_root.withdraw()
+        app = MapPathfinderUI(dummy_root, csv_path)
+        app.start_node = score_reference_node
+        
+        # --- FIX: Override the scoring method to ignore visited nodes ---
+        original_get_scores = app.get_leaf_nodes_with_scores
+        def patched_get_scores():
+            scores = original_get_scores()
+            for v in visited_nodes:
+                if v in scores:
+                    del scores[v] # Remove the score incentive for already visited nodes
+            return scores
+        app.get_leaf_nodes_with_scores = patched_get_scores
+        # ----------------------------------------------------------------
+        
+        # Calculate the global best path for the remaining time
+        final_path, _, _, _ = app.find_best_path_with_time_limit(current_node, remaining_time)
+        
+        if not final_path or len(final_path) < 2:
+            dummy_root.destroy()
+            return None, None, None
+            
+        # Chunk the path: take current node + next `max_steps` nodes
+        path_segment = final_path[:max_steps + 1]
+        
+        # Generate the LRFU sequence for JUST this segment
+        raw_lrfu = app.get_lrfu_sequence(path_segment, explore_mode=True)
+        
+        def get_cardinal_dir(u, v):
+            x1, y1 = app.pos[u]
+            x2, y2 = app.pos[v]
+            if x2 > x1: return 'E'
+            if x2 < x1: return 'W'
+            if y2 > y1: return 'N'
+            if y2 < y1: return 'S'
+            return 'N'
+            
+        turns = {
+            ('N', 'N'): 'F', ('N', 'E'): 'R', ('N', 'W'): 'L', ('N', 'S'): 'U',
+            ('S', 'S'): 'F', ('S', 'W'): 'R', ('S', 'E'): 'L', ('S', 'N'): 'U',
+            ('E', 'E'): 'F', ('E', 'S'): 'R', ('E', 'N'): 'L', ('E', 'W'): 'U',
+            ('W', 'W'): 'F', ('W', 'N'): 'R', ('W', 'S'): 'L', ('W', 'E'): 'U'
+        }
+        
+        required_initial_heading = get_cardinal_dir(path_segment[0], path_segment[1])
+        
+        # If a heading was provided and we aren't facing the right way, adjust the first move
+        if current_heading and current_heading != required_initial_heading:
+            turn_cmd = turns[(current_heading, required_initial_heading)]
+            
+            # If the first move requires a U-turn, check if it should be a 'V'
+            if turn_cmd == 'U':
+                u = path_segment[0]
+                ux, uy = app.pos[u]
+                right_vectors = {'N': (1, 0), 'E': (0, -1), 'S': (-1, 0), 'W': (0, 1)}
+                dx, dy = right_vectors[current_heading]
+
+                found_on_right = False
+                tol = 1e-6
+                for v, (vx, vy) in app.pos.items():
+                    if v == u:
+                        continue
+                    if dx != 0:
+                        if abs(vy - uy) < tol and (vx - ux) * dx > 0:
+                            found_on_right = True
+                            break
+                    else:
+                        if abs(vx - ux) < tol and (vy - uy) * dy > 0:
+                            found_on_right = True
+                            break
+
+                if not found_on_right:
+                    turn_cmd = 'V'
+
+            # Replace the initial implicit 'F' with the correct Turn + 'F'
+            if raw_lrfu:
+                raw_lrfu[0] = turn_cmd
+                raw_lrfu.insert(1, 'F')
+        
+        commands_str = ''.join(raw_lrfu)
+        
+        # The ending heading is the cardinal direction of the final edge in this segment
+        ending_heading = get_cardinal_dir(path_segment[-2], path_segment[-1])
+        
+        dummy_root.destroy()
+        
+        return path_segment, commands_str, ending_heading
+
+    except Exception as e:
+        print(f"Error getting next commands: {e}")
+        return None, None, None
 # ==========================================
 # Run the Application
 # ==========================================
 if __name__ == "__main__":
     # Ensure this matches your local environment path!
-    CSV_FILENAME = '../map/big_maze_114.csv' 
+    CSV_FILENAME = '../map/medium_maze.csv' 
 
     root = tk.Tk()
     app = MapPathfinderUI(root, CSV_FILENAME)
