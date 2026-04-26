@@ -352,7 +352,7 @@ class MapPathfinderUI:
         Calculate the time taken for a LRFU sequence.
         F: 1 second, L/R: 1.5 seconds, U/V: 2 seconds
         """
-        time_map = {'F': 0.95, 'L': 1.17, 'R': 1.17, 'U': 1.24, 'V': 1.24}
+        time_map = {'F': 0.80, 'L': 1.17, 'R': 1.17, 'U': 1.40, 'V': 1.40}
         return sum(time_map.get(c, 0) for c in lrfu_sequence)
 
     def calculate_path_score(self, path):
@@ -482,14 +482,14 @@ class MapPathfinderUI:
             return
 
         try:
-            time_limit = 70  # 20 seconds
+            time_limit = 70  # 70 seconds
             final_path, lrfu_str, total_score, total_time = self.find_best_path_with_time_limit(start_node, time_limit)
             
             # Calculate total distance along this route
             path_length = sum(self.G[u][v]['weight'] for u, v in zip(final_path, final_path[1:]))
             
             info_text = (
-                f"Mode: Time-Limited Exploration (70s limit)\n"
+                f"Mode: Time-Limited Exploration (s limit)\n"
                 f"Total Distance: {path_length} units | Steps: {len(final_path)-1}\n"
                 f"Total Score: {total_score} points | Time Used: {total_time:.1f}s\n"
                 f"Path Nodes: {' → '.join(map(str, final_path))}\n"

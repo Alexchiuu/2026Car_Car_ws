@@ -365,6 +365,7 @@ void handlePathExecution() {
     Serial.println("Executing chunk: " + chunk);
     // Execute the chunk
     for(int i = 0; i < chunk.length(); i++) {
+      if(i == chunk.length() - 1) Serial3.println("NEXT");
       char cmd = chunk.charAt(i);
       if (cmd == 'L') {
         Serial3.println("CMD: Left");
@@ -380,12 +381,12 @@ void handlePathExecution() {
         Serial3.println("CMD: U-Turn");
         uTurn();
         setMotors(-LEFT_BASE_SPEED, RIGHT_BASE_SPEED);
-        delay(80);
+        delay(130);
       } else if (cmd == 'F') {
         Serial3.println("CMD: Forward");
         if(LastCmd =='F'){// Initial burst to move off the current node
           setMotors(LEFT_BASE_SPEED * 0.8, RIGHT_BASE_SPEED * 0.8);
-          delay(320);
+          delay(300);
         }else{
 
         }
@@ -394,20 +395,14 @@ void handlePathExecution() {
         Serial3.println("CMD: V-Turn");
         vTurn();
         setMotors(LEFT_BASE_SPEED, -RIGHT_BASE_SPEED);
-        delay(80);
+        delay(130);
       }
       LastCmd = cmd;
       // Check for RFID card after each movement
-      String rfidData = scanRFID();
-      if (rfidData.length() > 0) {
-        Serial.println("RFID detected: " + rfidData);
-        Serial3.println(rfidData);  // Send RFID data to server
-      }
     }
     // Send NEXT
     setMotors(-LEFT_BASE_SPEED,-RIGHT_BASE_SPEED);
     delay(60);
-    Serial3.println("NEXT");
     setMotors(0,0);
   }
   Serial3.println("Path execution complete!");
@@ -484,6 +479,7 @@ void goForwardThenFollowToNode() {
     // --- 4. NODE DETECTION ---
     if (active >= 3) {
       nodeDetectCount++;
+      setMotors(LEFT_BASE_SPEED, RIGHT_BASE_SPEED);
       if (nodeDetectCount >= NODE_DETECT_THRESHOLD){
         setMotors(0, 0);
         break; 
@@ -494,7 +490,7 @@ void goForwardThenFollowToNode() {
     
     // Check for RFID
     String rfidData = scanRFID();
-    if (rfidData.length() > 0) {
+    if (rfidData.length() > 0) { // avoid sending RFID data during the first few loops (when the robot is just starting to move)
       Serial3.println(rfidData);
     }
 
@@ -521,7 +517,7 @@ void leftTurn() {
 
   int tmp = 0;
 
-  while(state != 2 && tmp < 40) { // while center sensor is not active
+  while(state != 2 && tmp < 48) { // while center sensor is not active
     tmp++;
     readSensorsBinary(sense);
     if(state == 0 && sense[0]) { // left sensor detects line first
@@ -552,7 +548,7 @@ void rightTurn() {
   
   int tmp = 0;
 
-  while(state != 2 && tmp < 40) { // while center sensor is not active
+  while(state != 2 && tmp < 48) { // while center sensor is not active
     tmp++;
     readSensorsBinary(sense);
     if(state == 0 && sense[4]) { // left sensor detects line first
@@ -573,7 +569,7 @@ void uTurn() {
 
   unsigned long t = millis();
 
-  setMotors(LEFT_BASE_SPEED * 0.7, -RIGHT_BASE_SPEED* 0.7);
+  setMotors(LEFT_BASE_SPEED * 0.65, -RIGHT_BASE_SPEED* 0.65);
 
   int state = 0;
   int sense[5];
@@ -583,7 +579,7 @@ void uTurn() {
   
   int tmp = 0;
 
-  while(state != 2 && tmp < 60) { // while center sensor is not active
+  while(state != 2 && tmp < 75) { // while center sensor is not active
     tmp++;
     readSensorsBinary(sense);
     if(state == 0 && sense[4]) { // left sensor detects line first
@@ -604,7 +600,7 @@ void vTurn() {
 
   unsigned long t = millis();
 
-  setMotors(-LEFT_BASE_SPEED * 0.7, RIGHT_BASE_SPEED * 0.7);
+  setMotors(-LEFT_BASE_SPEED * 0.65, RIGHT_BASE_SPEED * 0.65);
 
   int state = 0;
   int sense[5];
@@ -614,7 +610,7 @@ void vTurn() {
   
   int tmp = 0;
 
-  while(state != 2 && tmp < 60) { // while center sensor is not active
+  while(state != 2 && tmp < 75) { // while center sensor is not active
     tmp++;
     readSensorsBinary(sense);
     if(state == 0 && sense[0]) { // left sensor detects line first

@@ -362,7 +362,7 @@ class MapPathfinderUI:
         leaf_scores = self.get_leaf_nodes_with_scores()
         return sum(leaf_scores.get(node, 0) for node in set(path))
 
-    def find_best_path_with_time_limit(self, start_node, time_limit=70, beam_width=10):
+    def find_best_path_with_time_limit(self, start_node, time_limit=10, beam_width=10):
         """
         Finds a highly optimized path using Beam Search to maximize leaf node scores
         within the given time limit. Prevents UI freezing while avoiding local optima.
@@ -482,7 +482,7 @@ class MapPathfinderUI:
             return
 
         try:
-            time_limit = 70  # 20 seconds
+            time_limit = 10  # 10 seconds
             final_path, lrfu_str, total_score, total_time = self.find_best_path_with_time_limit(start_node, time_limit)
             
             # Calculate total distance along this route
@@ -619,7 +619,7 @@ def get_explore_map_commands(csv_path, start_node):
         dummy_root = tk.Tk()
         dummy_root.withdraw()
         app = MapPathfinderUI(dummy_root, csv_path)
-        final_path, lrfu_str, _, _ = app.find_best_path_with_time_limit(start_node, time_limit=70)
+        final_path, lrfu_str, _, _ = app.find_best_path_with_time_limit(start_node, time_limit=10)
         dummy_root.destroy()
         
         return final_path, lrfu_str

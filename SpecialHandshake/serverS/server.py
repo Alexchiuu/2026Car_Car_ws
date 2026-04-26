@@ -6,13 +6,13 @@ import threading
 import re
 from linktoserver import ScoreboardServer
 
-PORT = '/dev/tty.usbserial-110'
+PORT = '/dev/tty.usbserial-10'
 EXPECTED_NAME = 'AlexCarCar'
 MAP_CSV_PATH = "../map/medium_maze.csv" 
 PATH = None 
 
 # Scoreboard configuration
-TEAM_NAME = "TheBestTeam"
+TEAM_NAME = "guaiguai"
 SERVER_URL = "http://140.112.175.18"
 scoreboard = None
 
@@ -171,7 +171,7 @@ def main():
                             path_segment, chunk, ending_heading = get_next_explore_commands(
                                 csv_path=MAP_CSV_PATH, 
                                 current_node=current_node, 
-                                remaining_time=remaining_time, 
+                                remaining_time=remaining_time - 0.8, 
                                 visited_nodes=visited_nodes, 
                                 max_steps=3, 
                                 current_heading=current_heading,
