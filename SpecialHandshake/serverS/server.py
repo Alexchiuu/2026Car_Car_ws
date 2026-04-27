@@ -6,9 +6,9 @@ import threading
 import re
 from linktoserver import ScoreboardServer
 
-PORT = '/dev/tty.usbserial-10'
+PORT = '/dev/tty.usbserial-110'
 EXPECTED_NAME = 'AlexCarCar'
-MAP_CSV_PATH = "../map/medium_maze.csv" 
+MAP_CSV_PATH = "../map/big_maze_114.csv" 
 PATH = None 
 
 # Scoreboard configuration
@@ -148,7 +148,7 @@ def main():
 
                     if PATH:
                         if scoreboard is None:
-                            attempts = 10
+                            attempts = 5
                             for attempt in range(1, attempts + 1):
                                 try:
                                     print(f"🌐 Connecting to scoreboard... ({attempt}/{attempts})")
@@ -159,7 +159,7 @@ def main():
                                     time.sleep(1)
 
                         current_node = explore_start
-                        remaining_time = 70
+                        remaining_time = 65
                         current_heading = None
                         visited_nodes = set([current_node])
                         
@@ -171,7 +171,7 @@ def main():
                             path_segment, chunk, ending_heading = get_next_explore_commands(
                                 csv_path=MAP_CSV_PATH, 
                                 current_node=current_node, 
-                                remaining_time=remaining_time - 0.8, 
+                                remaining_time=remaining_time, 
                                 visited_nodes=visited_nodes, 
                                 max_steps=3, 
                                 current_heading=current_heading,
@@ -197,11 +197,6 @@ def main():
                             current_heading = ending_heading
                             visited_nodes.update(path_segment)
                             
-                            if remaining_time < 10:
-                                print(f"⏱️ Time running out ({remaining_time}s), stopping exploration")
-                                bridge.send("END\n")
-                                break
-                                
                         print("✅ Dynamic exploration completed!")
                     else:
                         print("❌ Error: Exploration start failed.")

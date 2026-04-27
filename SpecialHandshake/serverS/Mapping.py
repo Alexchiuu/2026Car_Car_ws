@@ -362,7 +362,7 @@ class MapPathfinderUI:
         leaf_scores = self.get_leaf_nodes_with_scores()
         return sum(leaf_scores.get(node, 0) for node in set(path))
 
-    def find_best_path_with_time_limit(self, start_node, time_limit=70, beam_width=10):
+    def find_best_path_with_time_limit(self, start_node, time_limit=65, beam_width=25):
         """
         Finds a highly optimized path using Beam Search to maximize leaf node scores
         within the given time limit. Prevents UI freezing while avoiding local optima.
@@ -695,7 +695,7 @@ def get_next_explore_commands(csv_path, current_node, remaining_time, visited_no
 # ==========================================
 if __name__ == "__main__":
     # Ensure this matches your local environment path!
-    CSV_FILENAME = '../map/medium_maze.csv' 
+    CSV_FILENAME = '../map/big_maze_114.csv' 
 
     root = tk.Tk()
     app = MapPathfinderUI(root, CSV_FILENAME)
